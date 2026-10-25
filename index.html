@@ -1,0 +1,2729 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="Play a MusicXML score part by part and follow along measure by measure: tempo, metronome, count-in, and mute, solo and volume for each part.">
+<style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>Score Follower</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,500;0,600;1,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: a sticky transport bar (the conductor's stand) over a parts rail and the engraved page. */
+:root {
+  --paper: #fbfaf7;
+  --surface: #f1efe9;
+  --ink: #1d2230;
+  --muted: #646a78;
+  --rule: #dcd8ce;
+  --amber: #a8620f;      /* rosin amber: playback highlight */
+  --amber-wash: rgba(214, 140, 40, .16);
+  --mute: #9aa0ac;
+  --display: "EB Garamond", "Iowan Old Style", Georgia, serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #15171d; --surface: #1e2129; --ink: #e8e5dc; --muted: #9a9fab; --rule: #2e323c;
+  --amber: #e9a245; --amber-wash: rgba(233, 162, 69, .2); --mute: #5d6370; color-scheme: dark;
+} }
+:root[data-theme="dark"] {
+  --paper: #15171d; --surface: #1e2129; --ink: #e8e5dc; --muted: #9a9fab; --rule: #2e323c;
+  --amber: #e9a245; --amber-wash: rgba(233, 162, 69, .2); --mute: #5d6370; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { background: var(--paper); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.45; }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--surface); }
+.wrap { padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+
+header.top { padding-block: 20px 12px; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; }
+h1 { font-family: var(--display); font-weight: 600; font-size: 1.9rem; margin: 0; letter-spacing: -.01em; }
+h1 em { font-weight: 500; color: var(--muted); }
+.loader { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; color: var(--muted); font-size: .85rem; }
+.btn-file { position: relative; overflow: hidden; }
+header.top { align-items: center; }
+.song-switch { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 1.15rem var(--display); padding: 6px 14px; border-color: var(--amber); background: var(--amber-wash); }
+.song-switch #pieceName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library { position: fixed; z-index: 40; top: calc(env(safe-area-inset-top, 0px) + 16px); left: 50%; transform: translateX(-50%);
+  width: min(440px, calc(100vw - 32px)); max-height: calc(100dvh - 32px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px)); overflow-y: auto; overscroll-behavior: contain;
+  background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; box-shadow: 0 20px 60px rgba(0,0,0,.25);
+  padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+.lib-head { display: flex; align-items: center; justify-content: space-between; }
+.lib-head h2 { font: 600 1.35rem var(--display); margin: 0; }
+.lib-group h3 { font: 600 .72rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+.lib-group ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.song { width: 100%; text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; }
+.song .t { font: 500 1.1rem var(--display); }
+.song .by { font-size: .8rem; color: var(--muted); }
+.song[aria-current="true"] { border-color: var(--amber); background: var(--amber-wash); }
+.lib-upload { text-align: center; padding: 10px 12px; }
+.lib-backdrop { z-index: 39; }
+.btn-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+.transport { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: var(--surface); border-block: 1px solid var(--rule); padding-block: 10px; }
+.transport .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+button, .btn-file { font: 500 .9rem var(--body); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+button:hover, .btn-file:hover { border-color: var(--muted); }
+button:focus-visible, input:focus-visible, .btn-file:focus-within { outline: 2px solid var(--amber); outline-offset: 2px; }
+button.play { background: var(--ink); color: var(--paper); border-color: var(--ink); min-width: 84px; font-weight: 600; }
+button[aria-pressed="true"] { background: var(--amber-wash); border-color: var(--amber); }
+.mnav { display: flex; align-items: center; gap: 6px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.mnav .label { font: 600 .7rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-right: 2px; }
+.mnav button { padding: 6px 10px; font-family: var(--mono); }
+#mNow { width: 3.4em; font: 500 1.25rem var(--mono); color: var(--amber); text-align: center; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 2px 4px; -moz-appearance: textfield; appearance: textfield; }
+#mNow::-webkit-inner-spin-button, #mNow::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.mnav .of { color: var(--muted); }
+.spacer { flex: 1; }
+#drawerBtn { display: none; }
+
+main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px; padding-block: 18px 40px; }
+.side { position: sticky; top: calc(var(--tbar, 58px) + env(safe-area-inset-top, 0px) + 14px); align-self: start; max-height: calc(100vh - var(--tbar, 58px) - 28px); max-height: calc(100dvh - var(--tbar, 58px) - 28px); overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; display: flex; flex-direction: column; gap: 16px; padding-right: 4px; padding-bottom: 12px; }
+.side-head { display: flex; align-items: center; justify-content: space-between; }
+.side-head h2 { font: 600 1.25rem var(--display); margin: 0; }
+.side .close { display: none; }
+.panel { display: flex; flex-direction: column; gap: 8px; }
+.panel h3 { font: 600 .72rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0; }
+.panel input[type="range"] { width: 100%; accent-color: var(--amber); }
+.big { display: flex; align-items: baseline; gap: 6px; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.big #tempoVal { font-size: 1.5rem; color: var(--amber); }
+#beatName { font: 600 .72rem var(--body); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.sub { font-size: .8rem; color: var(--muted); }
+.parts-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.part { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 6px 8px; border: 1px solid var(--rule); border-radius: 6px; background: var(--paper); }
+.part .name { flex: 1; min-width: 0; overflow-wrap: anywhere; font-weight: 500; }
+.part .tag { font: italic 500 .85rem var(--display); color: var(--amber); }
+.part .pvol { flex-basis: 100%; display: flex; align-items: center; gap: 8px; font-size: .75rem; color: var(--muted); }
+.part .pvol input { flex: 1; min-width: 0; accent-color: var(--amber); }
+.part .pvol output { font-family: var(--mono); font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+.part.silent .name { color: var(--mute); text-decoration: line-through; }
+.part button { padding: 3px 8px; font-size: .78rem; }
+.hint { color: var(--muted); font-size: .82rem; margin: 0; max-width: 40ch; }
+#countIn { font: 500 .9rem var(--body); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 8px; }
+.countdown { position: fixed; z-index: 30; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none;
+  display: grid; place-items: center; width: 168px; height: 168px; border-radius: 50%;
+  background: var(--surface); border: 2px solid var(--amber); box-shadow: 0 12px 40px rgba(0,0,0,.18);
+  font: 600 5.5rem/1 var(--display); color: var(--amber); font-variant-numeric: tabular-nums; }
+.countdown small { display: block; font: 600 .7rem var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-top: -6px; }
+.backdrop { position: fixed; inset: 0; z-index: 19; background: rgba(10, 12, 18, .4); }
+
+@media (max-width: 760px) {
+  main.layout { grid-template-columns: minmax(0, 1fr); }
+  #drawerBtn { display: inline-block; }
+  .side { position: fixed; z-index: 20; top: 0; bottom: auto; left: 0; width: min(320px, 86vw); height: 100vh; height: 100dvh; max-height: none;
+    background: var(--surface); border-right: 1px solid var(--rule); box-shadow: 0 0 40px rgba(0,0,0,.25);
+    padding-top: calc(16px + env(safe-area-inset-top, 0px)); padding-bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+    padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: 16px;
+    transform: translateX(-105%); transition: transform .22s ease; visibility: hidden; }
+  body.drawer-open .side { transform: none; visibility: visible; }
+  .side .close { display: inline-block; }
+  .loop-long { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .side { transition: none; } }
+
+.sheet { position: relative; background: #fff; border: 1px solid var(--rule); border-radius: 4px; overflow-x: auto; min-height: 200px; }
+#score { position: relative; }
+.measure-box { position: absolute; pointer-events: none; background: rgba(214, 140, 40, .13); border: 1.5px solid rgba(168, 98, 15, .7); border-radius: 3px; transition: left .08s, top .12s, width .08s; }
+.status { padding: 24px; color: #646a78; font-style: italic; }
+.status.err { color: #a3281b; font-style: normal; }
+@media (prefers-reduced-motion: reduce) { .measure-box { transition: none; } }
+</style>
+</head>
+<body>
+
+
+<header class="top wrap">
+  <h1>Score Follower</h1>
+  <button id="songBtn" class="song-switch" aria-haspopup="dialog" aria-expanded="false" aria-controls="library"><span id="pieceName">Choose a song</span> <span aria-hidden="true">▾</span></button>
+</header>
+
+<div class="library" id="library" role="dialog" aria-label="Song library" hidden>
+  <div class="lib-head"><h2>Songs</h2><button id="closeLib">Done</button></div>
+  <div id="libList"></div>
+  <label class="btn-file lib-upload">Upload a MusicXML file…<input id="fileInput" type="file"></label>
+  <p class="hint">Uploaded files open only on this device and aren’t saved to the library.</p>
+</div>
+<div class="backdrop lib-backdrop" id="libBackdrop" hidden></div>
+
+<div class="transport wrap" id="transport">
+  <div class="row">
+    <button id="drawerBtn" aria-expanded="false" aria-controls="side">☰ Tempo &amp; parts</button>
+    <button id="playBtn" class="play" disabled>Play</button>
+    <button id="rewindBtn" disabled title="Go back to bar 1">Rewind</button>
+    <button id="loopBtn" aria-pressed="false" disabled title="Repeat the current measure">Loop<span class="loop-long"> measure</span></button>
+    <div class="mnav">
+      <span class="label">Bar</span>
+      <button id="prevM" disabled aria-label="Previous measure">‹</button>
+      <input id="mNow" type="number" inputmode="numeric" aria-label="Go to measure" value="" disabled>
+      <button id="nextM" disabled aria-label="Next measure">›</button>
+      <span class="of" id="mTotal"></span>
+    </div>
+  </div>
+</div>
+
+<main class="layout wrap">
+  <aside class="side" id="side" aria-label="Playback settings">
+    <div class="side-head"><h2>Practice</h2><button class="close" id="closeSide">Done</button></div>
+    <section class="panel">
+      <h3>Tempo</h3>
+      <label class="big" for="tempo"><span id="beatName">♩</span> = <span id="tempoVal">80</span></label>
+      <input id="tempo" type="range" min="30" max="180" value="80">
+    </section>
+    <section class="panel">
+      <h3>Overall volume</h3>
+      <input id="masterVol" type="range" min="0" max="100" value="75" aria-label="Overall volume">
+    </section>
+    <section class="panel">
+      <h3>Metronome</h3>
+      <div><button id="metBtn" aria-pressed="false">Metronome on</button></div>
+      <label for="metVol" class="sub">Click volume</label>
+      <input id="metVol" type="range" min="0" max="100" value="60">
+      <label for="countIn" class="sub">Count-in when you press Play</label>
+      <select id="countIn">
+        <option value="0">Off</option>
+        <option value="1">1 bar</option>
+        <option value="2" selected>2 bars</option>
+      </select>
+    </section>
+    <section class="panel">
+      <h3>Parts</h3>
+      <ul id="partList" class="parts-list"></ul>
+    </section>
+    <p class="hint">Tap any measure in the score to jump there, or type a bar number at the top. Mute your part to play it yourself along with the others.</p>
+  </aside>
+  <div class="backdrop" id="backdrop" hidden></div>
+  <div class="countdown" id="countdown" hidden aria-live="assertive"><div><span id="countNum">4</span><small>Get ready</small></div></div>
+  <section class="sheet" id="sheet">
+    <div id="score"><div class="status" id="status">Loading score…</div></div>
+    <div class="measure-box" id="mbox" hidden></div>
+  </section>
+</main>
+
+<script type="text/plain" data-piece="bach-66-6" data-title="Chorale, BWV 66.6" data-group="Demo"><?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE score-partwise  PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <movement-title>Chorale, BWV 66.6</movement-title>
+  <identification>
+    <creator type="composer">J. S. Bach</creator>
+    <encoding>
+      <encoding-date>2026-10-22</encoding-date>
+      <software>music21 v.10.5.0</software>
+      <software>Finale for Macintosh</software>
+      <software>Dolet Light for Finale 2006</software>
+      <supports element="beam" type="yes" />
+      <supports element="stem" type="yes" />
+      <supports element="accidental" type="yes" />
+    </encoding>
+  </identification>
+  <defaults>
+    <scaling>
+      <millimeters>7</millimeters>
+      <tenths>40</tenths>
+    </scaling>
+  </defaults>
+  <part-list>
+    <part-group number="1" type="start">
+      <group-symbol>bracket</group-symbol>
+      <group-barline>yes</group-barline>
+    </part-group>
+    <score-part id="P1">
+      <part-name>Soprano</part-name>
+      <part-abbreviation>S.</part-abbreviation>
+      <score-instrument id="I3db77cbecd1dab06653359f55d0d4cdc">
+        <instrument-name>Instrument 1</instrument-name>
+      </score-instrument>
+    </score-part>
+    <score-part id="P2">
+      <part-name>Alto</part-name>
+      <part-abbreviation>A.</part-abbreviation>
+      <score-instrument id="Icc733b77de15f4a61cc87ebf427a7b67">
+        <instrument-name>Instrument 2</instrument-name>
+      </score-instrument>
+    </score-part>
+    <score-part id="P3">
+      <part-name>Tenor</part-name>
+      <part-abbreviation>T.</part-abbreviation>
+      <score-instrument id="Icdabe34cdbd53094d0b0d12f5d598b43">
+        <instrument-name>Instrument 3</instrument-name>
+      </score-instrument>
+    </score-part>
+    <score-part id="P4">
+      <part-name>Bass</part-name>
+      <part-abbreviation>B.</part-abbreviation>
+      <score-instrument id="I45ce7178fa4b51c53b3a93ce23492ab2">
+        <instrument-name>Instrument 4</instrument-name>
+      </score-instrument>
+    </score-part>
+    <part-group number="1" type="stop" />
+  </part-list>
+  <!--=========================== Part 1 ===========================-->
+  <part id="P1">
+    <!--========================= Measure 0 ==========================-->
+    <measure implicit="yes" number="0">
+      <attributes>
+        <divisions>10080</divisions>
+        <key>
+          <fifths>3</fifths>
+          <mode>minor</mode>
+        </key>
+        <time symbol="common">
+          <beats>4</beats>
+          <beat-type>4</beat-type>
+        </time>
+        <clef>
+          <sign>G</sign>
+          <line>2</line>
+        </clef>
+      </attributes>
+      <direction>
+        <direction-type>
+          <words />
+        </direction-type>
+        <sound tempo="96" />
+      </direction>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+    </measure>
+    <!--========================= Measure 1 ==========================-->
+    <measure implicit="no" number="1">
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+        <notations>
+          <fermata type="upright" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 2 ==========================-->
+    <measure implicit="no" number="2">
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+        <notations>
+          <fermata type="upright" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 3 ==========================-->
+    <measure implicit="no" number="3">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+        <notations>
+          <fermata type="upright" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 4 ==========================-->
+    <measure implicit="no" number="4">
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 5 ==========================-->
+    <measure implicit="no" number="5">
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+        <notations>
+          <fermata type="upright" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 6 ==========================-->
+    <measure implicit="no" number="6">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>5</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 7 ==========================-->
+    <measure implicit="no" number="7">
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <stem>up</stem>
+        <notations>
+          <fermata type="upright" />
+        </notations>
+      </note>
+    </measure>
+    <!--========================= Measure 8 ==========================-->
+    <measure implicit="no" number="8">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <tie type="start" />
+        <type>quarter</type>
+        <stem>up</stem>
+        <notations>
+          <tied type="start" />
+        </notations>
+      </note>
+    </measure>
+    <!--========================= Measure 9 ==========================-->
+    <measure implicit="no" number="9">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <tie type="stop" />
+        <type>quarter</type>
+        <stem>up</stem>
+        <notations>
+          <tied type="stop" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <accidental>sharp</accidental>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+        <notations>
+          <fermata type="upright" />
+        </notations>
+      </note>
+      <note print-object="no" print-spacing="yes">
+        <rest />
+        <duration>10080</duration>
+        <type>quarter</type>
+      </note>
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+      </barline>
+    </measure>
+  </part>
+  <!--=========================== Part 2 ===========================-->
+  <part id="P2">
+    <!--========================= Measure 0 ==========================-->
+    <measure implicit="yes" number="0">
+      <attributes>
+        <divisions>10080</divisions>
+        <key>
+          <fifths>3</fifths>
+          <mode>minor</mode>
+        </key>
+        <time symbol="common">
+          <beats>4</beats>
+          <beat-type>4</beat-type>
+        </time>
+        <clef>
+          <sign>G</sign>
+          <line>2</line>
+        </clef>
+      </attributes>
+      <direction>
+        <direction-type>
+          <words />
+        </direction-type>
+        <sound tempo="96" />
+      </direction>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 1 ==========================-->
+    <measure implicit="no" number="1">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 2 ==========================-->
+    <measure implicit="no" number="2">
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 3 ==========================-->
+    <measure implicit="no" number="3">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <accidental>sharp</accidental>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 4 ==========================-->
+    <measure implicit="no" number="4">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <accidental>sharp</accidental>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 5 ==========================-->
+    <measure implicit="no" number="5">
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 6 ==========================-->
+    <measure implicit="no" number="6">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 7 ==========================-->
+    <measure implicit="no" number="7">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <accidental>sharp</accidental>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 8 ==========================-->
+    <measure implicit="no" number="8">
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+    </measure>
+    <!--========================= Measure 9 ==========================-->
+    <measure implicit="no" number="9">
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note print-object="no" print-spacing="yes">
+        <rest />
+        <duration>10080</duration>
+        <type>quarter</type>
+      </note>
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+      </barline>
+    </measure>
+  </part>
+  <!--=========================== Part 3 ===========================-->
+  <part id="P3">
+    <!--========================= Measure 0 ==========================-->
+    <measure implicit="yes" number="0">
+      <attributes>
+        <divisions>10080</divisions>
+        <key>
+          <fifths>3</fifths>
+          <mode>minor</mode>
+        </key>
+        <time symbol="common">
+          <beats>4</beats>
+          <beat-type>4</beat-type>
+        </time>
+        <clef>
+          <sign>F</sign>
+          <line>4</line>
+        </clef>
+      </attributes>
+      <direction>
+        <direction-type>
+          <words />
+        </direction-type>
+        <sound tempo="96" />
+      </direction>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+    </measure>
+    <!--========================= Measure 1 ==========================-->
+    <measure implicit="no" number="1">
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 2 ==========================-->
+    <measure implicit="no" number="2">
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 3 ==========================-->
+    <measure implicit="no" number="3">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 4 ==========================-->
+    <measure implicit="no" number="4">
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 5 ==========================-->
+    <measure implicit="no" number="5">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 6 ==========================-->
+    <measure implicit="no" number="6">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 7 ==========================-->
+    <measure implicit="no" number="7">
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <tie type="start" />
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+        <notations>
+          <tied type="start" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>5040</duration>
+        <tie type="stop" />
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+        <notations>
+          <tied type="stop" />
+        </notations>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <accidental>sharp</accidental>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 8 ==========================-->
+    <measure implicit="no" number="8">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>4</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <accidental>sharp</accidental>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+    </measure>
+    <!--========================= Measure 9 ==========================-->
+    <measure implicit="no" number="9">
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <accidental>sharp</accidental>
+        <stem>down</stem>
+      </note>
+      <note print-object="no" print-spacing="yes">
+        <rest />
+        <duration>10080</duration>
+        <type>quarter</type>
+      </note>
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+      </barline>
+    </measure>
+  </part>
+  <!--=========================== Part 4 ===========================-->
+  <part id="P4">
+    <!--========================= Measure 0 ==========================-->
+    <measure implicit="yes" number="0">
+      <attributes>
+        <divisions>10080</divisions>
+        <key>
+          <fifths>3</fifths>
+          <mode>minor</mode>
+        </key>
+        <time symbol="common">
+          <beats>4</beats>
+          <beat-type>4</beat-type>
+        </time>
+        <clef>
+          <sign>F</sign>
+          <line>4</line>
+        </clef>
+      </attributes>
+      <direction>
+        <direction-type>
+          <words />
+        </direction-type>
+        <sound tempo="96" />
+      </direction>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+    </measure>
+    <!--========================= Measure 1 ==========================-->
+    <measure implicit="no" number="1">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 2 ==========================-->
+    <measure implicit="no" number="2">
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>2</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <accidental>sharp</accidental>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 3 ==========================-->
+    <measure implicit="no" number="3">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>2</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>2</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 4 ==========================-->
+    <measure implicit="no" number="4">
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>2</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>down</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 5 ==========================-->
+    <measure implicit="no" number="5">
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>G</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>A</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 6 ==========================-->
+    <measure implicit="no" number="6">
+      <print new-system="yes" />
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>4</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>E</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <accidental>sharp</accidental>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 7 ==========================-->
+    <measure implicit="no" number="7">
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>2</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">begin</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>5040</duration>
+        <type>eighth</type>
+        <stem>up</stem>
+        <beam number="1">end</beam>
+      </note>
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 8 ==========================-->
+    <measure implicit="no" number="8">
+      <note>
+        <pitch>
+          <step>A</step>
+          <alter>1</alter>
+          <octave>2</octave>
+        </pitch>
+        <duration>20160</duration>
+        <type>half</type>
+        <accidental>sharp</accidental>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>2</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>C</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+    </measure>
+    <!--========================= Measure 9 ==========================-->
+    <measure implicit="no" number="9">
+      <note>
+        <pitch>
+          <step>D</step>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>B</step>
+          <octave>2</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>up</stem>
+      </note>
+      <note>
+        <pitch>
+          <step>F</step>
+          <alter>1</alter>
+          <octave>3</octave>
+        </pitch>
+        <duration>10080</duration>
+        <type>quarter</type>
+        <stem>down</stem>
+      </note>
+      <note print-object="no" print-spacing="yes">
+        <rest />
+        <duration>10080</duration>
+        <type>quarter</type>
+      </note>
+      <barline location="right">
+        <bar-style>light-heavy</bar-style>
+      </barline>
+    </measure>
+  </part>
+</score-partwise></script>
+
+<script src="https://cdn.jsdelivr.net/npm/opensheetmusicdisplay@1.9.0/build/opensheetmusicdisplay.min.js"></script>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const scoreEl = $('score'), mbox = $('mbox'), sheet = $('sheet');
+  let osmd, steps = [], notes = [], parts = [], measureCount = 0;
+  let ctx, master, partGains = [];
+  let playing = false, startPos = 0, startTime = 0, stepIdx = 0, raf = 0, activeNodes = new Set(), pumpTimer = 0;
+  let meta = { beatUnit: 0.25, bpm: 80, pizz: [] };
+  let loop = false, tempo = 80, metOn = false, metGain, beats = [];
+  const state = { mute: [], solo: [] };
+
+  // ---------- reading the file's own markings ----------
+  // Tempo mark (with its beat unit) and pizz./arco text per part and measure.
+  const UNITS = { whole: 1, half: 0.5, quarter: 0.25, eighth: 0.125, '16th': 0.0625 };
+  const UNIT_NAMES = { 1: 'Whole', 0.5: 'Half', 0.375: 'Dotted ♩', 0.25: '♩', 0.75: 'Dotted half', 0.125: '♪', 0.1875: 'Dotted ♪' };
+  function parseMeta(text) {
+    const out = { beatUnit: 0.25, bpm: 0, pizz: [] };
+    let doc;
+    try { doc = new DOMParser().parseFromString(text, 'application/xml'); } catch (e) { return out; }
+    if (!doc || doc.querySelector('parsererror')) return out;
+    const met = doc.querySelector('metronome');
+    if (met && met.querySelector('beat-unit') && met.querySelector('per-minute')) {
+      let u = UNITS[met.querySelector('beat-unit').textContent.trim()] || 0.25;
+      if (met.querySelector('beat-unit-dot')) u *= 1.5;
+      out.beatUnit = u; out.bpm = parseFloat(met.querySelector('per-minute').textContent) || 0;
+    } else {
+      const bt = doc.querySelector('time beat-type'), bs = doc.querySelector('time beats');
+      if (bt) {
+        const d = parseInt(bt.textContent, 10), n = parseInt(bs && bs.textContent, 10);
+        out.beatUnit = (d === 8 && n % 3 === 0) ? 3 / 8 : 1 / d;   // 6/8 → dotted quarter
+      }
+      const snd = doc.querySelector('sound[tempo]');   // <sound tempo> is always quarter notes
+      if (snd) out.bpm = parseFloat(snd.getAttribute('tempo')) * 0.25 / out.beatUnit;
+    }
+    doc.querySelectorAll('part').forEach(part => {
+      let on = false; const per = [];
+      part.querySelectorAll(':scope > measure').forEach(m => {
+        m.querySelectorAll('words').forEach(w => {
+          const t = w.textContent.trim().toLowerCase();
+          if (t.startsWith('pizz')) on = true; else if (t.startsWith('arco')) on = false;
+        });
+        m.querySelectorAll('technical > other-technical, technical > pizzicato').forEach(() => {});
+        per.push(on);
+      });
+      out.pizz.push(per);
+    });
+    return out;
+  }
+  const isPizz = (part, m) => !!(meta.pizz[part] && meta.pizz[part][m]);
+
+  // ---------- loading ----------
+  async function loadXml(text, label) {
+    stop();
+    scoreEl.innerHTML = '';
+    mbox.hidden = true;
+    osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(scoreEl, {
+      backend: 'svg', autoResize: true, drawTitle: true, drawComposer: true,
+      followCursor: true, cursorsOptions: [{ type: 0, color: '#a8620f', alpha: 0.35, follow: true }]
+    });
+    try {
+      await osmd.load(text);
+      osmd.zoom = window.innerWidth < 600 ? 0.6 : 0.85;
+      osmd.render();
+    } catch (e) {
+      scoreEl.innerHTML = '<div class="status err">Couldn’t read that file. Make sure it’s MusicXML (.musicxml, .xml or .mxl).</div>';
+      console.error(e); return;
+    }
+    meta = parseMeta(text);
+    buildTimeline();
+    buildParts();
+    $('beatName').textContent = UNIT_NAMES[meta.beatUnit] || '♩';
+    let bpm = Math.round(meta.bpm);
+    if (!bpm) bpm = Math.round((osmd.Sheet.DefaultStartTempoInBpm || 80) * 0.25 / meta.beatUnit);
+    setTempo(Math.min(180, Math.max(30, bpm || 80)));
+    ['playBtn', 'rewindBtn', 'loopBtn', 'prevM', 'nextM', 'mNow'].forEach(id => $(id).disabled = false);
+    osmd.cursor.show();
+    seekStep(0);
+  }
+
+  function freqOf(n) {
+    let f = n.Pitch && n.Pitch.Frequency;
+    if (!isFinite(f) || !f) f = 440 * Math.pow(2, ((n.halfTone + 12) - 69) / 12);
+    return f;
+  }
+  function tieDuration(n) {
+    const tie = n.NoteTie;
+    try { if (tie.Duration) return tie.Duration.RealValue; } catch (e) {}
+    return tie.Notes.reduce((s, x) => s + x.Length.RealValue, 0);
+  }
+
+  // Walk the cursor once to get every onset, its measure, and every sounding note.
+  function buildTimeline() {
+    const c = osmd.cursor; c.reset();
+    const insts = osmd.Sheet.Instruments;
+    steps = []; notes = [];
+    let guard = 0;
+    while (!c.Iterator.EndReached && guard++ < 100000) {
+      const it = c.Iterator;
+      const ts = (it.CurrentEnrolledTimestamp || it.currentTimeStamp).RealValue;
+      const m = it.CurrentMeasureIndex;
+      steps.push({ t: ts, m });
+      for (const ve of it.CurrentVoiceEntries) {
+        const part = Math.max(0, insts.indexOf(ve.ParentVoice.Parent));
+        for (const n of ve.Notes) {
+          if (n.isRest() || !n.Pitch) continue;
+          let dur = n.Length.RealValue;
+          if (n.NoteTie) { if (n.NoteTie.StartNote !== n) continue; dur = tieDuration(n); }
+          // x-noteheads are the standard notation for unpitched effects (chops, slaps): play as a chop
+          const NH = opensheetmusicdisplay.NoteHeadShape;
+          const shape = n.Notehead && n.Notehead.Shape;
+          const chop = !!NH && (shape === NH.X || shape === NH.CIRCLEX);
+          if (chop && notes.some(o => o.chop && o.part === part && o.t === ts)) continue;  // one chop per chord
+          notes.push({ t: ts, dur, f: freqOf(n), part, pizz: isPizz(part, m), chop });
+        }
+      }
+      c.next();
+    }
+    // end marker = last onset + longest note starting there
+    const last = steps[steps.length - 1];
+    const tail = Math.max(0.25, ...notes.filter(n => n.t === last.t).map(n => n.dur));
+    steps.push({ t: last.t + tail, m: last.m, end: true });
+    measureCount = osmd.GraphicSheet.MeasureList.length;
+    beats = [];
+    for (const sm of osmd.Sheet.SourceMeasures) {
+      const start = sm.AbsoluteTimestamp.RealValue, len = sm.Duration.RealValue;
+      const unit = meta.beatUnit;
+      for (let k = 0, t = start; t < start + len - 1e-6; k++, t += unit) beats.push({ t, down: k === 0 });
+    }
+    $('mTotal').textContent = '/ ' + measureCount;
+    c.reset();
+  }
+
+  function buildParts() {
+    parts = osmd.Sheet.Instruments.map((ins, i) => ins.Name || ('Part ' + (i + 1)));
+    state.vol = parts.map(() => 0.8);
+    partGains = [];
+    state.mute = parts.map(() => false); state.solo = parts.map(() => false);
+    const ul = $('partList'); ul.innerHTML = '';
+    parts.forEach((name, i) => {
+      const li = document.createElement('li'); li.className = 'part'; li.id = 'part' + i;
+      li.innerHTML = `<span class="name"></span><button id="mute${i}" aria-pressed="false">Mute</button><button id="solo${i}" aria-pressed="false">Solo</button><label class="pvol" for="vol${i}">Vol<input id="vol${i}" type="range" min="0" max="100" value="80"><output id="volOut${i}">80</output></label>`;
+      li.querySelector('.name').textContent = name;
+      if (meta.pizz[i] && meta.pizz[i].some(Boolean)) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'pizz.'; li.querySelector('.name').after(t); }
+      ul.appendChild(li);
+      li.querySelector('#mute' + i).onclick = e => { state.mute[i] = !state.mute[i]; e.target.setAttribute('aria-pressed', state.mute[i]); applyGains(); };
+      li.querySelector('#vol' + i).oninput = e => { state.vol[i] = e.target.value / 100; $('volOut' + i).textContent = e.target.value; applyGains(); };
+      li.querySelector('#solo' + i).onclick = e => { state.solo[i] = !state.solo[i]; e.target.setAttribute('aria-pressed', state.solo[i]); applyGains(); };
+    });
+    applyGains();
+  }
+  function audible(i) { const anySolo = state.solo.some(Boolean); return anySolo ? state.solo[i] : !state.mute[i]; }
+  const partLevel = i => audible(i) ? Math.pow(state.vol[i] ?? 0.8, 2) * 1.5 : 0;
+  function applyGains() {
+    parts.forEach((_, i) => {
+      $('part' + i).classList.toggle('silent', !audible(i));
+      if (partGains[i]) partGains[i].gain.setTargetAtTime(partLevel(i), ctx.currentTime, 0.02);
+    });
+  }
+
+  // ---------- audio ----------
+  // Wakes the audio engine from any state (suspended, or iOS's "interrupted"),
+  // and builds per-part routing once per score instead of on every Play.
+  function newContext() {
+    ctx = new (window.AudioContext || window.webkitAudioContext)();
+    // master volume -> limiter-style compressor -> speakers. The limiter lets the
+    // volume go well past the old level without the loud chords distorting.
+    master = ctx.createGain(); master.gain.value = masterLevel();
+    const comp = ctx.createDynamicsCompressor();
+    comp.threshold.value = -14; comp.knee.value = 8; comp.ratio.value = 12;
+    comp.attack.value = 0.003; comp.release.value = 0.2;
+    meter = ctx.createAnalyser(); meter.fftSize = 2048;
+    const makeup = ctx.createGain(); makeup.gain.value = 1.25;
+    master.connect(comp); comp.connect(makeup); makeup.connect(ctx.destination); makeup.connect(meter);
+    partGains = []; metGain = null;
+  }
+  function buildRouting() {
+    partGains = parts.map((_, i) => {
+      const g = ctx.createGain(); g.gain.value = partLevel(i);
+      const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+      const spread = parts.length > 1 ? (i / (parts.length - 1)) * 1.0 - 0.5 : 0;
+      if (p) { p.pan.value = spread; g.connect(p); p.connect(master); } else g.connect(master);
+      return g;
+    });
+    metGain = ctx.createGain(); metGain.gain.value = metLevel(); metGain.connect(master);
+  }
+  async function ensureAudio() {
+    if (!ctx || ctx.state === 'closed') newContext();
+    unlockIOS();
+    if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) {} }
+    if (ctx.state !== 'running') {
+      try { ctx.close(); } catch (e) {}
+      newContext();
+      try { await ctx.resume(); } catch (e) {}
+    }
+    if (partGains.length !== parts.length || !metGain) buildRouting();
+  }
+  // A bowed-string-ish voice: two detuned saws, low-pass, slow attack, gentle vibrato.
+  function voice(f, when, len, dest) {
+    const o1 = ctx.createOscillator(), o2 = ctx.createOscillator();
+    o1.type = 'sawtooth'; o2.type = 'sawtooth';
+    o1.frequency.value = f; o2.frequency.value = f * 1.004;
+    const lfo = ctx.createOscillator(), lfoG = ctx.createGain();
+    lfo.frequency.value = 5.2; lfoG.gain.value = f * 0.004;
+    lfo.connect(lfoG); lfoG.connect(o1.frequency); lfoG.connect(o2.frequency);
+    const filt = ctx.createBiquadFilter(); filt.type = 'lowpass';
+    filt.frequency.value = Math.min(4000, f * 5); filt.Q.value = 0.7;
+    const env = ctx.createGain(); env.gain.value = 0;
+    const atk = Math.min(0.07, len * 0.3), rel = Math.min(0.15, len * 0.3);
+    const end = when + len;
+    env.gain.setValueAtTime(0, when);
+    env.gain.linearRampToValueAtTime(0.18, when + atk);
+    env.gain.setValueAtTime(0.15, Math.max(when + atk, end - rel));
+    env.gain.linearRampToValueAtTime(0, end);
+    o1.connect(filt); o2.connect(filt); filt.connect(env); env.connect(dest);
+    [o1, o2, lfo].forEach(o => { o.start(when); o.stop(end + 0.05); });
+    track(o1, o2, lfo);
+  }
+  // iPhones mute Web Audio when the ringer switch is on silent. Asking for a
+  // "playback" audio session, and keeping a silent <audio> element running,
+  // routes sound like a music app instead.
+  let silentEl;
+  function unlockIOS() {
+    try { if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch (e) {}
+    if (silentEl) { silentEl.play().catch(() => {}); return; }
+    const rate = 8000, n = rate / 2, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+    const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+    w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate, true);
+    v.setUint16(32, 1, true); v.setUint16(34, 8, true); w(36, 'data'); v.setUint32(40, n, true);
+    for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+    let bin = ''; new Uint8Array(buf).forEach(b => bin += String.fromCharCode(b));
+    silentEl = document.createElement('audio');
+    silentEl.src = 'data:audio/wav;base64,' + btoa(bin);
+    silentEl.loop = true; silentEl.setAttribute('playsinline', '');
+    silentEl.play().catch(() => {});
+  }
+  const secPerWhole = () => 60 / tempo / meta.beatUnit;
+  // Plucked string: bright attack that dies away on its own, whatever the written length.
+  // Chop: a short scratchy burst of bow noise with a low thump, no real pitch.
+  let noiseBuf;
+  function chopSound(when, dest) {
+    if (!noiseBuf || noiseBuf.sampleRate !== ctx.sampleRate) {
+      noiseBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.12), ctx.sampleRate);
+      const d = noiseBuf.getChannelData(0);
+      for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / d.length, 2);
+    }
+    const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 1400; bp.Q.value = 0.9;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(0.9, when + 0.003);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.09);
+    src.connect(bp); bp.connect(g); g.connect(dest);
+    const o = ctx.createOscillator(), og = ctx.createGain();
+    o.type = 'sine'; o.frequency.setValueAtTime(140, when); o.frequency.exponentialRampToValueAtTime(70, when + 0.06);
+    og.gain.setValueAtTime(0.0001, when); og.gain.exponentialRampToValueAtTime(0.35, when + 0.003);
+    og.gain.exponentialRampToValueAtTime(0.0001, when + 0.07);
+    o.connect(og); og.connect(dest);
+    src.start(when); src.stop(when + 0.12); o.start(when); o.stop(when + 0.08);
+    track(src, o);
+  }
+  function pluck(f, when, dest) {
+    const o = ctx.createOscillator(), o2 = ctx.createOscillator();
+    o.type = 'triangle'; o2.type = 'sine'; o.frequency.value = f; o2.frequency.value = f * 2;
+    const filt = ctx.createBiquadFilter(); filt.type = 'lowpass';
+    filt.frequency.setValueAtTime(Math.min(5000, f * 8), when);
+    filt.frequency.exponentialRampToValueAtTime(Math.max(200, f * 1.5), when + 0.4);
+    const g = ctx.createGain(), g2 = ctx.createGain(); g2.gain.value = 0.25;
+    g.gain.setValueAtTime(0.0001, when);
+    g.gain.exponentialRampToValueAtTime(0.42, when + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.9);
+    o.connect(filt); o2.connect(g2); g2.connect(filt); filt.connect(g); g.connect(dest);
+    [o, o2].forEach(x => { x.start(when); x.stop(when + 0.95); });
+    track(o, o2);
+  }
+  const masterLevel = () => 2.4 * Math.pow(+$('masterVol').value / 100, 2);
+  let meter;
+  const metLevel = () => metOn ? Math.pow(+$('metVol').value / 100, 2) * 1.6 : 0;
+  function click(when, down, dest) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = 'square'; o.frequency.value = down ? 1760 : 1175;
+    g.gain.setValueAtTime(0.0001, when); g.gain.exponentialRampToValueAtTime(down ? 0.5 : 0.3, when + 0.002);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.05);
+    o.connect(g); g.connect(dest || metGain); o.start(when); o.stop(when + 0.06); track(o);
+  }
+
+  function measureRange(mi) {
+    const a = steps.find(s => s.m === mi && !s.end);
+    const nextStep = steps.find(s => s.m > mi || s.end);
+    return { from: a ? a.t : 0, to: nextStep ? nextStep.t : steps[steps.length - 1].t };
+  }
+
+  let playToken = 0;
+  // Keep a set of sounding nodes; each removes itself when it finishes.
+  function track(...ns) { ns.forEach(n => { activeNodes.add(n); n.onended = () => activeNodes.delete(n); }); }
+
+  // Lookahead scheduler: only build the next ~1.2 s of sound, topping up every 100 ms.
+  // Building a whole piece at once stalls phones and makes the start stutter.
+  const LOOKAHEAD = 1.2;
+  let queue = [], qi = 0, beatQ = [], bi = 0, qStop = Infinity;
+  function pump() {
+    if (!playing) return;
+    const spw = secPerWhole(), horizon = ctx.currentTime + LOOKAHEAD;
+    const at = t => startTime + (t - startPos) * spw;
+    while (qi < queue.length && at(queue[qi].t) < horizon) {
+      const n = queue[qi++], when = at(n.t);
+      if (when < ctx.currentTime - 0.05) continue;          // fell behind: skip rather than pile up
+      const len = Math.min(n.dur, qStop - n.t) * spw;
+      if (n.chop) chopSound(when, partGains[n.part]);
+      else if (n.pizz) pluck(n.f, when, partGains[n.part]);
+      else voice(n.f, when, Math.max(0.05, len * 0.98), partGains[n.part]);
+    }
+    while (bi < beatQ.length && at(beatQ[bi].t) < horizon) {
+      const b = beatQ[bi++], when = at(b.t);
+      if (when >= ctx.currentTime - 0.02) click(when, b.down);
+    }
+  }
+
+  let countEnd = 0, countBeatSec = 0, countStart = 0, countTotal = 0;
+  async function play(opts = {}) {
+    const token = ++playToken;
+    await ensureAudio();
+    if (token !== playToken) return;   // a Pause or another Play came in while waiting
+    const pos = steps[stepIdx].end ? 0 : steps[stepIdx].t;
+    if (steps[stepIdx].end) seekStep(0);
+    startPos = pos;
+    qStop = loop ? measureRange(steps[stepIdx].m).to : Infinity;
+    const inRange = x => x.t >= startPos - 1e-6 && x.t < qStop - 1e-6;
+    queue = notes.filter(inRange); qi = 0;
+    beatQ = beats.filter(inRange); bi = 0;
+    // Count-in: click the beat for N bars (always audible, even with the metronome off)
+    let lead = 0;
+    const bars = opts.countIn ? +$('countIn').value : 0;
+    if (bars > 0) {
+      const sm = osmd.Sheet.SourceMeasures[steps[stepIdx].m];
+      const perBar = Math.max(1, Math.round((sm ? sm.Duration.RealValue : 1) / meta.beatUnit));
+      countBeatSec = meta.beatUnit * secPerWhole();
+      const t0 = ctx.currentTime + 0.1, cg = ctx.createGain();
+      cg.gain.value = 0.35 + 0.9 * (+$('metVol').value / 100); cg.connect(master);
+      for (let k = 0; k < perBar * bars; k++) click(t0 + k * countBeatSec, k % perBar === 0, cg);
+      lead = perBar * bars * countBeatSec + 0.04;
+      countStart = t0; countTotal = perBar * bars;
+      $('countNum').textContent = countTotal; $('countdown').hidden = false;
+      countEnd = ctx.currentTime + 0.06 + lead;
+    } else countEnd = 0;
+    startTime = ctx.currentTime + 0.06 + lead;
+    playing = true; $('playBtn').textContent = 'Pause';
+    pump();
+    clearInterval(pumpTimer); pumpTimer = setInterval(pump, 100);
+    raf = requestAnimationFrame(tick);
+  }
+  function stop() {
+    playToken++;
+    playing = false; cancelAnimationFrame(raf); clearInterval(pumpTimer);
+    countEnd = 0; $('countdown').hidden = true;
+    activeNodes.forEach(o => { o.onended = null; try { o.stop(); } catch (e) {} }); activeNodes.clear();
+    $('playBtn').textContent = 'Play';
+  }
+  function tick() {
+    if (!playing) return;
+    if (countEnd && ctx.currentTime < countEnd) {
+      $('countdown').hidden = false;
+      const beat = Math.max(0, Math.floor((ctx.currentTime - countStart) / countBeatSec));
+      $('countNum').textContent = Math.max(1, countTotal - beat);
+    } else if (!$('countdown').hidden) $('countdown').hidden = true;
+    const pos = startPos + (ctx.currentTime - startTime) / secPerWhole();
+    if (loop) {
+      const r = measureRange(steps[stepIdx].m);
+      if (pos >= r.to - 1e-6) { const mi = steps[stepIdx].m; stop(); seekMeasure(mi); play(); return; }
+    }
+    let moved = false;
+    while (stepIdx < steps.length - 1 && steps[stepIdx + 1].t <= pos + 1e-6) {
+      stepIdx++; if (!steps[stepIdx].end) osmd.cursor.Iterator.moveToNext(); moved = true;
+    }
+    if (moved) osmd.cursor.update();
+    if (moved) showMeasure(steps[stepIdx].m);
+    if (steps[stepIdx].end) { stop(); return; }
+    raf = requestAnimationFrame(tick);
+  }
+
+  // ---------- position + highlight ----------
+  function seekStep(i) {
+    const c = osmd.cursor; c.reset();
+    for (let k = 0; k < i; k++) c.Iterator.moveToNext();
+    c.update();
+    stepIdx = i; showMeasure(steps[i].m);
+  }
+  function seekMeasure(mi) {
+    const i = steps.findIndex(s => s.m === mi && !s.end);
+    if (i >= 0) seekStep(i);
+  }
+  function measureRect(mi) {
+    const col = (osmd.GraphicSheet.MeasureList[mi] || []).filter(Boolean);
+    if (!col.length) return null;
+    const z = osmd.zoom * 10;
+    const a = col[0].PositionAndShape, b = col[col.length - 1].PositionAndShape;
+    const svg = scoreEl.querySelector('svg'); if (!svg) return null;
+    const so = svg.getBoundingClientRect(), co = sheet.getBoundingClientRect();
+    const ox = so.left - co.left + sheet.scrollLeft, oy = so.top - co.top;
+    return {
+      x: ox + a.AbsolutePosition.x * z - 4,
+      y: oy + (a.AbsolutePosition.y - 1.5) * z,
+      w: a.Size.width * z + 8,
+      h: (b.AbsolutePosition.y + b.Size.height - a.AbsolutePosition.y + 3) * z
+    };
+  }
+  function showMeasure(mi) {
+    const col = osmd.GraphicSheet.MeasureList[mi];
+    const num = col && col.find(Boolean) ? col.find(Boolean).MeasureNumber : mi + 1;
+    if (document.activeElement !== $('mNow')) $('mNow').value = num;
+    const r = measureRect(mi); if (!r) return;
+    Object.assign(mbox.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
+    mbox.hidden = false;
+  }
+  scoreEl.addEventListener('click', e => {
+    if (!osmd || !steps.length) return;
+    const co = sheet.getBoundingClientRect();
+    const x = e.clientX - co.left + sheet.scrollLeft, y = e.clientY - co.top;
+    for (let mi = 0; mi < measureCount; mi++) {
+      const r = measureRect(mi);
+      if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+        const was = playing; stop(); seekMeasure(mi); if (was) play(); return;
+      }
+    }
+  });
+  window.addEventListener('resize', () => setTimeout(() => steps.length && showMeasure(steps[stepIdx].m), 400));
+
+  // ---------- controls ----------
+  function setTempo(v) { tempo = v; $('tempo').value = v; $('tempoVal').textContent = v; }
+  $('tempo').addEventListener('input', e => {
+    const was = playing; if (was) { syncToNow(); stop(); }
+    setTempo(+e.target.value); if (was) play();
+  });
+  function syncToNow() {
+    // keep cursor where playback currently is before restarting
+    tick();
+  }
+  $('metBtn').onclick = e => { metOn = !metOn; e.target.setAttribute('aria-pressed', metOn); e.target.textContent = metOn ? 'Metronome on ✓' : 'Metronome on'; if (metGain) metGain.gain.setTargetAtTime(metLevel(), ctx.currentTime, 0.01); };
+  $('masterVol').addEventListener('input', () => { if (master) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02); });
+  $('metVol').addEventListener('input', () => { if (metGain) metGain.gain.setTargetAtTime(metLevel(), ctx.currentTime, 0.01); });
+  $('playBtn').onclick = () => playing ? stop() : play({ countIn: true });
+
+  // ---------- measure navigation ----------
+  function jumpTo(mi) {
+    mi = Math.max(0, Math.min(measureCount - 1, mi));
+    const was = playing; stop(); seekMeasure(mi); if (was) play();
+    const r = measureRect(mi);
+    if (r) { const top = sheet.getBoundingClientRect().top + window.scrollY + r.y - $('transport').offsetHeight - 40;
+      if (r.y + sheet.getBoundingClientRect().top < $('transport').offsetHeight + 20 || r.y + r.h + sheet.getBoundingClientRect().top > window.innerHeight)
+        window.scrollTo({ top, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }
+  }
+  const curMeasure = () => steps.length ? steps[stepIdx].m : 0;
+  $('prevM').onclick = () => jumpTo(curMeasure() - 1);
+  $('nextM').onclick = () => jumpTo(curMeasure() + 1);
+  $('mNow').addEventListener('change', e => {
+    const n = parseInt(e.target.value, 10); if (isNaN(n)) return;
+    const ml = osmd.GraphicSheet.MeasureList;
+    let mi = ml.findIndex(col => { const g = col && col.find(Boolean); return g && g.MeasureNumber === n; });
+    if (mi < 0) mi = n - 1;
+    jumpTo(mi); e.target.blur();
+  });
+  $('mNow').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
+
+  // ---------- sidebar drawer (phones) ----------
+  function setDrawer(open) {
+    document.body.classList.toggle('drawer-open', open);
+    $('backdrop').hidden = !open;
+    $('drawerBtn').setAttribute('aria-expanded', open);
+  }
+  $('drawerBtn').onclick = () => setDrawer(!document.body.classList.contains('drawer-open'));
+  $('closeSide').onclick = () => setDrawer(false);
+  $('backdrop').onclick = () => setDrawer(false);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setDrawer(false); });
+  // keep the desktop sidebar pinned just below the transport bar
+  const setTbar = () => document.documentElement.style.setProperty('--tbar', $('transport').offsetHeight + 'px');
+  setTbar(); if (window.ResizeObserver) new ResizeObserver(setTbar).observe($('transport'));
+  // If the engine gets interrupted mid-play (a call, another app), stop cleanly
+  // so the next Play starts fresh instead of hanging.
+  setInterval(() => {
+    if (playing && ctx && ctx.state !== 'running') stop();
+  }, 500);
+  $('rewindBtn').onclick = () => { const was = playing; stop(); seekStep(0); if (was) play(); };
+  $('loopBtn').onclick = e => {
+    loop = !loop; e.target.setAttribute('aria-pressed', loop);
+    if (playing) { const mi = steps[stepIdx].m; stop(); seekMeasure(mi); play(); }
+  };
+  document.addEventListener('keydown', e => {
+    if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && !$('playBtn').disabled) { e.preventDefault(); $('playBtn').click(); }
+  });
+  $('fileInput').addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { markPiece(null); setLibrary(false); $('pieceName').textContent = f.name.replace(/\.(musicxml|xml|mxl)$/i, ''); loadXml(r.result, f.name.replace(/\.(musicxml|xml|mxl)$/i, '')); };
+    if (/\.mxl$/i.test(f.name)) r.readAsBinaryString(f); else r.readAsText(f);
+  });
+
+  // Song library: each built-in song is a <script type="text/plain" data-piece data-title data-group>
+  // block in this page. Songs are grouped by data-group (a year, a recital…), newest group first.
+  const pieceEls = [...document.querySelectorAll('script[data-piece]')];
+  function markPiece(id) { document.querySelectorAll('#libList .song').forEach(b => b.setAttribute('aria-current', b.dataset.id === id)); }
+  function setLibrary(open) {
+    $('library').hidden = !open; $('libBackdrop').hidden = !open;
+    $('songBtn').setAttribute('aria-expanded', open);
+    if (open) { const cur = document.querySelector('#libList .song[aria-current="true"]') || document.querySelector('#libList .song'); cur && cur.focus(); }
+  }
+  function openPiece(el) {
+    markPiece(el.dataset.piece); $('fileInput').value = ''; setLibrary(false); setDrawer(false);
+    $('pieceName').textContent = el.dataset.title;
+    loadXml(el.textContent.trim(), el.dataset.title);
+  }
+  const groups = new Map();
+  pieceEls.forEach(el => { const g = el.dataset.group || 'Songs'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(el); });
+  [...groups.keys()].sort().reverse().forEach(g => {
+    const sec = document.createElement('section'); sec.className = 'lib-group';
+    sec.innerHTML = '<h3></h3><ul></ul>'; sec.querySelector('h3').textContent = g;
+    groups.get(g).forEach(el => {
+      const li = document.createElement('li'), b = document.createElement('button');
+      b.className = 'song'; b.dataset.id = el.dataset.piece;
+      const m = el.textContent.match(/<creator[^>]*>([^<]*)<\/creator>/);
+      b.innerHTML = '<span class="t"></span><span class="by"></span>';
+      b.querySelector('.t').textContent = el.dataset.title;
+      b.querySelector('.by').textContent = m ? m[1].replace(/&amp;/g, '&') : '';
+      b.onclick = () => openPiece(el);
+      li.appendChild(b); sec.querySelector('ul').appendChild(li);
+    });
+    $('libList').appendChild(sec);
+  });
+  $('songBtn').onclick = () => setLibrary($('library').hidden);
+  $('closeLib').onclick = () => setLibrary(false);
+  $('libBackdrop').onclick = () => setLibrary(false);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setLibrary(false); });
+  if (window.opensheetmusicdisplay && pieceEls.length) openPiece(pieceEls[0]);
+  else $('status').textContent = 'The notation library didn’t load. Check your connection and reload.';
+  window.__sf = { peak() { if (!meter) return 0; const d = new Float32Array(meter.fftSize); meter.getFloatTimeDomainData(d); return d.reduce((m, x) => Math.max(m, Math.abs(x)), 0); }, get steps() { return steps; }, get notes() { return notes; }, get parts() { return parts; } };
+})();
+</script>
+
+</body>
+</html>
