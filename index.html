@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="description" content="Play a MusicXML score part by part and follow along measure by measure: tempo, metronome, count-in, and mute, solo and volume for each part.">
+<meta name="description" content="Play a MusicXML score part by part and follow along measure by measure: tempo, metronome, count-in, repeats, and mute, solo and volume for each part.">
 <style>:root{color-scheme:light;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui,-apple-system,sans-serif}img{max-width:100%}[hidden]{display:none!important}</style>
 <title>Score Follower</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -168,6 +168,11 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
       <h3>Tempo</h3>
       <label class="big" for="tempo"><span id="beatName">♩</span> = <span id="tempoVal">80</span></label>
       <input id="tempo" type="range" min="30" max="180" value="80">
+    </section>
+    <section class="panel" id="repeatPanel" hidden>
+      <h3>Repeats</h3>
+      <div><button id="repeatBtn" aria-pressed="true">Play repeats ✓</button></div>
+      <p class="sub" id="repeatNote"></p>
     </section>
     <section class="panel">
       <h3>Overall volume</h3>
@@ -58481,7 +58486,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   // ---------- reading the file's own markings ----------
   // Tempo mark (with its beat unit) and pizz./arco text per part and measure.
   const UNITS = { whole: 1, half: 0.5, quarter: 0.25, eighth: 0.125, '16th': 0.0625 };
-  const UNIT_NAMES = { 1: 'Whole', 0.5: 'Half', 0.375: 'Dotted ♩', 0.25: '♩', 0.75: 'Dotted half', 0.125: '♪', 0.1875: 'Dotted ♪' };
+  const UNIT_NAMES = { 1: 'Whole', 0.5: 'Half', 0.375: 'Dotted quarter', 0.25: 'Quarter', 0.75: 'Dotted half', 0.125: 'Eighth', 0.1875: 'Dotted eighth' };
   function parseMeta(text) {
     const out = { beatUnit: 0.25, bpm: 0, pizz: [] };
     let doc;
@@ -58513,6 +58518,28 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
       });
       out.pizz.push(per);
     });
+    // Repeat signs and 1st/2nd endings, per measure index, from the first part.
+    out.bars = []; out.hasRepeats = false;
+    const firstPart = doc.querySelector('part');
+    if (firstPart) {
+      let cur = null;
+      firstPart.querySelectorAll(':scope > measure').forEach(m => {
+        const b = { forward: false, backward: false, times: 2, ending: null };
+        m.querySelectorAll(':scope > barline').forEach(bl => {
+          const rep = bl.querySelector('repeat'), end = bl.querySelector('ending');
+          if (rep) {
+            out.hasRepeats = true;
+            if (rep.getAttribute('direction') === 'forward') b.forward = true;
+            else { b.backward = true; b.times = parseInt(rep.getAttribute('times'), 10) || 2; }
+          }
+          if (end && end.getAttribute('type') === 'start')
+            cur = (end.getAttribute('number') || '1').split(/[,\s]+/).map(Number).filter(Boolean);
+        });
+        if (cur) b.ending = cur;
+        m.querySelectorAll(':scope > barline ending').forEach(end => { if (end.getAttribute('type') !== 'start') cur = null; });
+        out.bars.push(b);
+      });
+    }
     return out;
   }
   const isPizz = (part, m) => !!(meta.pizz[part] && meta.pizz[part][m]);
@@ -58537,7 +58564,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     meta = parseMeta(text);
     buildTimeline();
     buildParts();
-    $('beatName').textContent = UNIT_NAMES[meta.beatUnit] || '♩';
+    $('beatName').textContent = UNIT_NAMES[meta.beatUnit] || 'Quarter';
     let bpm = Math.round(meta.bpm);
     if (!bpm) bpm = Math.round((osmd.Sheet.DefaultStartTempoInBpm || 80) * 0.25 / meta.beatUnit);
     setTempo(Math.min(180, Math.max(30, bpm || 80)));
@@ -58561,13 +58588,14 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   function buildTimeline() {
     const c = osmd.cursor; c.reset();
     const insts = osmd.Sheet.Instruments;
-    steps = []; notes = [];
+    baseSteps = []; baseNotes = [];
+    const steps = baseSteps, notes = baseNotes;
     let guard = 0;
     while (!c.Iterator.EndReached && guard++ < 100000) {
       const it = c.Iterator;
       const ts = (it.CurrentEnrolledTimestamp || it.currentTimeStamp).RealValue;
       const m = it.CurrentMeasureIndex;
-      steps.push({ t: ts, m });
+      steps.push({ t: ts, m, src: steps.length });
       for (const ve of it.CurrentVoiceEntries) {
         const part = Math.max(0, insts.indexOf(ve.ParentVoice.Parent));
         for (const n of ve.Notes) {
@@ -58579,24 +58607,71 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
           const shape = n.Notehead && n.Notehead.Shape;
           const chop = !!NH && (shape === NH.X || shape === NH.CIRCLEX);
           if (chop && notes.some(o => o.chop && o.part === part && o.t === ts)) continue;  // one chop per chord
-          notes.push({ t: ts, dur, f: freqOf(n), part, pizz: isPizz(part, m), chop });
+          notes.push({ t: ts, dur, f: freqOf(n), part, pizz: isPizz(part, m), chop, m });
         }
       }
       c.next();
     }
-    // end marker = last onset + longest note starting there
-    const last = steps[steps.length - 1];
-    const tail = Math.max(0.25, ...notes.filter(n => n.t === last.t).map(n => n.dur));
-    steps.push({ t: last.t + tail, m: last.m, end: true });
     measureCount = osmd.GraphicSheet.MeasureList.length;
-    beats = [];
-    for (const sm of osmd.Sheet.SourceMeasures) {
-      const start = sm.AbsoluteTimestamp.RealValue, len = sm.Duration.RealValue;
-      const unit = meta.beatUnit;
-      for (let k = 0, t = start; t < start + len - 1e-6; k++, t += unit) beats.push({ t, down: k === 0 });
-    }
     $('mTotal').textContent = '/ ' + measureCount;
-    c.reset();
+    c.reset(); cursorSrc = 0;
+    const has = !!(meta.bars && meta.hasRepeats);
+    $('repeatPanel').hidden = !has;
+    expandTimeline();
+  }
+
+  // ---------- repeats ----------
+  // The order measures are played in: follows repeat signs and 1st/2nd endings when on.
+  let baseSteps = [], baseNotes = [], repeatsOn = true, cursorSrc = 0;
+  function playOrder(n) {
+    const bars = meta.bars || [];
+    if (!repeatsOn || !meta.hasRepeats) return [...Array(n).keys()];
+    const order = [], done = new Set();
+    let i = 0, start = 0, pass = 1, guard = 0, prevEnding = false;
+    while (i < n && guard++ < 20000) {
+      const b = bars[i] || {};
+      if (b.forward && i !== start) { start = i; pass = 1; }
+      if (!b.ending && prevEnding && pass > 1) pass = 1;   // left the 1st/2nd-ending area
+      prevEnding = !!b.ending;
+      if (b.ending && !b.ending.includes(pass)) { i++; continue; }   // not this time through
+      order.push(i);
+      if (b.backward && !done.has(i + ':' + pass)) {
+        if (pass < (b.times || 2)) { done.add(i + ':' + pass); pass++; i = start; prevEnding = false; continue; }
+        if (!b.ending) { pass = 1; start = i + 1; }
+      }
+      i++;
+    }
+    return order;
+  }
+  function expandTimeline() {
+    const SM = osmd.Sheet.SourceMeasures;
+    const order = playOrder(SM.length);
+    const stepsBy = new Map(), notesBy = new Map();
+    for (const st of baseSteps) { if (!stepsBy.has(st.m)) stepsBy.set(st.m, []); stepsBy.get(st.m).push(st); }
+    for (const nt of baseNotes) { if (!notesBy.has(nt.m)) notesBy.set(nt.m, []); notesBy.get(nt.m).push(nt); }
+    steps = []; notes = []; beats = [];
+    let t = 0;
+    for (const mi of order) {
+      const sm = SM[mi], s0 = sm.AbsoluteTimestamp.RealValue, len = sm.Duration.RealValue;
+      for (const st of stepsBy.get(mi) || []) steps.push({ t: t + st.t - s0, m: mi, src: st.src });
+      for (const nt of notesBy.get(mi) || []) notes.push(Object.assign({}, nt, { t: t + nt.t - s0 }));
+      for (let k = 0, u = 0; u < len - 1e-6; k++, u += meta.beatUnit) beats.push({ t: t + u, down: k === 0 });
+      t += len;
+    }
+    const lastOn = steps.length ? steps[steps.length - 1].t : 0;
+    const tail = Math.max(0, ...notes.filter(x => x.t === lastOn).map(x => x.t + x.dur));
+    steps.push({ t: Math.max(t, tail), m: order[order.length - 1] || 0, end: true, src: -1 });
+    const extra = order.length - SM.length;
+    $('repeatNote').textContent = meta.hasRepeats
+      ? (repeatsOn ? `Plays ${order.length} bars with repeats (${extra} repeated).` : 'Repeats are skipped: plays straight through.')
+      : '';
+  }
+  // Move the score cursor to a source step, stepping forward when possible, jumping back for repeats.
+  function cursorTo(src) {
+    const c = osmd.cursor;
+    if (src === cursorSrc + 1) c.Iterator.moveToNext();
+    else if (src !== cursorSrc) { c.reset(); for (let k = 0; k < src; k++) c.Iterator.moveToNext(); }
+    cursorSrc = src;
   }
 
   function buildParts() {
@@ -58752,10 +58827,13 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     o.connect(g); g.connect(dest || metGain); o.start(when); o.stop(when + 0.06); track(o);
   }
 
+  // Time span of one pass through measure mi: the pass we're in now, else the first one.
   function measureRange(mi) {
-    const a = steps.find(s => s.m === mi && !s.end);
-    const nextStep = steps.find(s => s.m > mi || s.end);
-    return { from: a ? a.t : 0, to: nextStep ? nextStep.t : steps[steps.length - 1].t };
+    let i = steps[stepIdx] && steps[stepIdx].m === mi ? stepIdx : steps.findIndex(s => s.m === mi && !s.end);
+    if (i < 0) return { from: 0, to: 0 };
+    while (i > 0 && steps[i - 1].m === mi && !steps[i - 1].end) i--;
+    let j = i; while (j < steps.length && steps[j].m === mi && !steps[j].end) j++;
+    return { from: steps[i].t, to: steps[j] ? steps[j].t : steps[steps.length - 1].t };
   }
 
   let playToken = 0;
@@ -58838,7 +58916,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     }
     let moved = false;
     while (stepIdx < steps.length - 1 && steps[stepIdx + 1].t <= pos + 1e-6) {
-      stepIdx++; if (!steps[stepIdx].end) osmd.cursor.Iterator.moveToNext(); moved = true;
+      stepIdx++; if (!steps[stepIdx].end) cursorTo(steps[stepIdx].src); moved = true;
     }
     if (moved) osmd.cursor.update();
     if (moved) showMeasure(steps[stepIdx].m);
@@ -58848,9 +58926,9 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
 
   // ---------- position + highlight ----------
   function seekStep(i) {
-    const c = osmd.cursor; c.reset();
-    for (let k = 0; k < i; k++) c.Iterator.moveToNext();
-    c.update();
+    osmd.cursor.reset(); cursorSrc = 0;
+    if (steps[i] && !steps[i].end) cursorTo(steps[i].src);
+    osmd.cursor.update();
     stepIdx = i; showMeasure(steps[i].m);
   }
   function seekMeasure(mi) {
@@ -58907,6 +58985,13 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   $('masterVol').addEventListener('input', () => { if (master) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02); });
   $('metVol').addEventListener('input', () => { if (metGain) metGain.gain.setTargetAtTime(metLevel(), ctx.currentTime, 0.01); });
   $('playBtn').onclick = () => playing ? stop() : play({ countIn: true });
+  $('repeatBtn').onclick = e => {
+    repeatsOn = !repeatsOn;
+    e.target.setAttribute('aria-pressed', repeatsOn);
+    e.target.textContent = repeatsOn ? 'Play repeats ✓' : 'Play repeats';
+    const was = playing, mi = steps.length ? steps[stepIdx].m : 0;
+    stop(); expandTimeline(); seekMeasure(mi); if (was) play();
+  };
 
   // ---------- measure navigation ----------
   function jumpTo(mi) {
