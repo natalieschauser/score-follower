@@ -26,7 +26,7 @@ You can also open any other MusicXML file with the upload button.
 - Reads standard notation markings: "pizz." and "arco" switch between plucked and bowed sound, and x-noteheads play as percussive chops
 - Opens any MusicXML file (`.musicxml`, `.xml`, `.mxl`) exported from MuseScore, Sibelius, Finale or Dorico
 
-Uploaded files stay in your browser and are never sent anywhere.
+Uploaded files are saved in your browser on that device (IndexedDB) so they're still there next time. They're never sent anywhere and don't sync between devices.
 
 ## How it works
 

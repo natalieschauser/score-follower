@@ -58,6 +58,10 @@ header.top { align-items: center; }
 .song .by { font-size: .8rem; color: var(--muted); }
 .song[aria-current="true"] { border-color: var(--amber); background: var(--amber-wash); }
 .lib-upload { text-align: center; padding: 10px 12px; }
+.up-row { display: flex; gap: 6px; align-items: stretch; }
+.up-row .song { flex: 1; min-width: 0; }
+.up-row .song .by { overflow-wrap: anywhere; }
+.up-del { flex: none; font-size: .8rem; padding: 6px 10px; color: var(--muted); }
 .lib-backdrop { z-index: 39; }
 .btn-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 
@@ -141,7 +145,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   <div class="lib-head"><h2>Songs</h2><button id="closeLib">Done</button></div>
   <div id="libList"></div>
   <label class="btn-file lib-upload">Upload a MusicXML file…<input id="fileInput" type="file"></label>
-  <p class="hint">Uploaded files open only on this device and aren’t saved to the library.</p>
+  <p class="hint">Uploads are saved in this browser only. They aren’t shared with anyone and don’t sync to your other devices.</p>
 </div>
 <div class="backdrop lib-backdrop" id="libBackdrop" hidden></div>
 
@@ -58720,9 +58724,15 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   function buildRouting() {
     partGains = parts.map((_, i) => {
       const g = ctx.createGain(); g.gain.value = partLevel(i);
+      // cello body: wood resonances around 220 Hz, 580 Hz and 1.3 kHz, softened top end
+      let last = g;
+      for (const [type, freq, q, db] of [['peaking', 220, 1.0, 4], ['peaking', 580, 1.3, 3], ['peaking', 1300, 1.6, 2], ['highshelf', 3500, 0.7, -9]]) {
+        const bq = ctx.createBiquadFilter(); bq.type = type; bq.frequency.value = freq; bq.Q.value = q; bq.gain.value = db;
+        last.connect(bq); last = bq;
+      }
       const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
       const spread = parts.length > 1 ? (i / (parts.length - 1)) * 1.0 - 0.5 : 0;
-      if (p) { p.pan.value = spread; g.connect(p); p.connect(master); } else g.connect(master);
+      if (p) { p.pan.value = spread; last.connect(p); p.connect(master); } else last.connect(master);
       return g;
     });
     metGain = ctx.createGain(); metGain.gain.value = metLevel(); metGain.connect(master);
@@ -58739,25 +58749,51 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     if (partGains.length !== parts.length || !metGain) buildRouting();
   }
   // A bowed-string-ish voice: two detuned saws, low-pass, slow attack, gentle vibrato.
+  // Bowed cello voice. What makes it read as bowed rather than struck:
+  // the note swells in (no hard attack), a short burst of bow noise at the start,
+  // tone that brightens as the bow bites, vibrato that arrives a moment after the
+  // note starts, and notes that connect without gaps. The cello-body EQ is per part (buildRouting).
+  let bowBuf;
   function voice(f, when, len, dest) {
+    const end = when + len;
     const o1 = ctx.createOscillator(), o2 = ctx.createOscillator();
     o1.type = 'sawtooth'; o2.type = 'sawtooth';
-    o1.frequency.value = f; o2.frequency.value = f * 1.004;
+    o1.frequency.value = f; o2.frequency.value = f * 1.0035;
+    // delayed vibrato
     const lfo = ctx.createOscillator(), lfoG = ctx.createGain();
-    lfo.frequency.value = 5.2; lfoG.gain.value = f * 0.004;
+    lfo.frequency.value = 5.4;
+    lfoG.gain.setValueAtTime(0, when);
+    if (len > 0.3) { lfoG.gain.setValueAtTime(0, when + 0.18); lfoG.gain.linearRampToValueAtTime(f * 0.005, when + Math.min(0.5, len * 0.6)); }
     lfo.connect(lfoG); lfoG.connect(o1.frequency); lfoG.connect(o2.frequency);
-    const filt = ctx.createBiquadFilter(); filt.type = 'lowpass';
-    filt.frequency.value = Math.min(4000, f * 5); filt.Q.value = 0.7;
-    const env = ctx.createGain(); env.gain.value = 0;
-    const atk = Math.min(0.07, len * 0.3), rel = Math.min(0.15, len * 0.3);
-    const end = when + len;
-    env.gain.setValueAtTime(0, when);
-    env.gain.linearRampToValueAtTime(0.18, when + atk);
-    env.gain.setValueAtTime(0.15, Math.max(when + atk, end - rel));
-    env.gain.linearRampToValueAtTime(0, end);
+    // tone opens up as the bow grips the string, then settles
+    const filt = ctx.createBiquadFilter(); filt.type = 'lowpass'; filt.Q.value = 0.6;
+    const bright = Math.min(5000, f * 7), dark = Math.min(3000, f * 3.2);
+    filt.frequency.setValueAtTime(dark, when);
+    filt.frequency.linearRampToValueAtTime(bright, when + Math.min(0.08, len * 0.4));
+    filt.frequency.setTargetAtTime(Math.min(4200, f * 5), when + 0.1, 0.25);
+    // swell in, sustain, release slightly past the written end so notes connect
+    const env = ctx.createGain();
+    const atk = Math.min(0.1, Math.max(0.025, len * 0.35)), rel = Math.min(0.12, Math.max(0.04, len * 0.3));
+    env.gain.setValueAtTime(0.0001, when);
+    env.gain.exponentialRampToValueAtTime(0.17, when + atk);
+    env.gain.setTargetAtTime(0.15, when + atk, 0.2);
+    env.gain.setValueAtTime(0.15, Math.max(when + atk, end - 0.01));
+    env.gain.exponentialRampToValueAtTime(0.0001, end + rel);
     o1.connect(filt); o2.connect(filt); filt.connect(env); env.connect(dest);
-    [o1, o2, lfo].forEach(o => { o.start(when); o.stop(end + 0.05); });
+    [o1, o2, lfo].forEach(o => { o.start(when); o.stop(end + rel + 0.05); });
     track(o1, o2, lfo);
+    // bow noise at the start of the note
+    if (!bowBuf || bowBuf.sampleRate !== ctx.sampleRate) {
+      bowBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.15), ctx.sampleRate);
+      const d = bowBuf.getChannelData(0); for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    }
+    const nz = ctx.createBufferSource(); nz.buffer = bowBuf;
+    const nbp = ctx.createBiquadFilter(); nbp.type = 'bandpass'; nbp.frequency.value = Math.min(6000, f * 6); nbp.Q.value = 1.2;
+    const ng = ctx.createGain();
+    ng.gain.setValueAtTime(0.0001, when); ng.gain.exponentialRampToValueAtTime(0.05, when + 0.01);
+    ng.gain.exponentialRampToValueAtTime(0.0001, when + Math.min(0.12, len * 0.6 + 0.02));
+    nz.connect(nbp); nbp.connect(ng); ng.connect(dest);
+    nz.start(when); nz.stop(when + 0.15); track(nz);
   }
   // iPhones mute Web Audio when the ringer switch is on silent. Asking for a
   // "playback" audio session, and keeping a silent <audio> element running,
@@ -59040,50 +59076,137 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   document.addEventListener('keydown', e => {
     if (e.code === 'Space' && e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON' && !$('playBtn').disabled) { e.preventDefault(); $('playBtn').click(); }
   });
+  // Uploads: read the file (plain MusicXML, or zipped .mxl / .mxl.zip), save it on this device, open it.
   $('fileInput').addEventListener('change', e => {
     const f = e.target.files[0]; if (!f) return;
     const r = new FileReader();
-    r.onload = () => { markPiece(null); setLibrary(false); $('pieceName').textContent = f.name.replace(/\.(musicxml|xml|mxl)$/i, ''); loadXml(r.result, f.name.replace(/\.(musicxml|xml|mxl)$/i, '')); };
-    if (/\.mxl$/i.test(f.name)) r.readAsBinaryString(f); else r.readAsText(f);
+    r.onload = async () => {
+      const bytes = new Uint8Array(r.result);
+      const zipped = bytes[0] === 0x50 && bytes[1] === 0x4b;   // "PK": a zip archive
+      let data;
+      if (zipped) { let bin = ''; for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); data = bin; }
+      else data = new TextDecoder('utf-8').decode(bytes);
+      const name = f.name.replace(/(\.zip)?$/i, '').replace(/\.(musicxml|xml|mxl)$/i, '');
+      let title = name.replace(/^[0-9a-f]{6,}-/i, '').replace(/[-_]+/g, ' ').replace(/\s+/g, ' ').trim();
+      title = title.charAt(0).toUpperCase() + title.slice(1);
+      if (!zipped) { const m = data.match(/<work-title>([^<]+)<\/work-title>/) || data.match(/<movement-title>([^<]+)<\/movement-title>/); if (m && !/untitled|sin t[ií]tulo|^\s*$/i.test(m[1])) title = m[1].trim(); }
+      const existing = uploads.find(u => u.file === f.name);
+      const rec = { id: existing ? existing.id : 'up-' + Date.now(), file: f.name, title, data, added: Date.now() };
+      await upPut(rec);
+      uploads = await upAll(); renderLibrary();
+      openUpload(rec);
+    };
+    r.readAsArrayBuffer(f);
   });
 
-  // Song library: each built-in song is a <script type="text/plain" data-piece data-title data-group>
-  // block in this page. Songs are grouped by data-group (a year, a recital…), newest group first.
+  // ---------- uploads saved on this device (IndexedDB) ----------
+  // Files stay in this browser only: never uploaded anywhere, not synced to other devices.
+  const DB_NAME = 'score-follower', STORE = 'uploads';
+  let uploads = [];
+  function idb() {
+    return new Promise((res, rej) => {
+      try {
+        const r = indexedDB.open(DB_NAME, 1);
+        r.onupgradeneeded = () => r.result.createObjectStore(STORE, { keyPath: 'id' });
+        r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+      } catch (e) { rej(e); }
+    });
+  }
+  async function upAll() {
+    try { const db = await idb(); return await new Promise(res => { const q = db.transaction(STORE).objectStore(STORE).getAll(); q.onsuccess = () => res((q.result || []).sort((x, y) => y.added - x.added)); q.onerror = () => res([]); }); }
+    catch (e) { return []; }
+  }
+  async function upPut(rec) {
+    try { const db = await idb(); await new Promise((res, rej) => { const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).put(rec); tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+      try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (e) {}
+      return true; }
+    catch (e) { return false; }
+  }
+  async function upDel(id) {
+    try { const db = await idb(); await new Promise(res => { const tx = db.transaction(STORE, 'readwrite'); tx.objectStore(STORE).delete(id); tx.oncomplete = res; tx.onerror = res; }); } catch (e) {}
+  }
+  const remember = id => { try { localStorage.setItem('sf-last-song', id); } catch (e) {} };
+  const lastSong = () => { try { return localStorage.getItem('sf-last-song'); } catch (e) { return null; } };
+
+  // ---------- song library ----------
+  // Built-in songs are <script type="text/plain" data-piece data-title data-group> blocks in this page,
+  // grouped by data-group (a year, a recital…), newest group first. Uploads come first, under "On this device".
   const pieceEls = [...document.querySelectorAll('script[data-piece]')];
-  function markPiece(id) { document.querySelectorAll('#libList .song').forEach(b => b.setAttribute('aria-current', b.dataset.id === id)); }
+  let currentId = null;
+  function markPiece(id) { currentId = id; document.querySelectorAll('#libList .song').forEach(b => b.setAttribute('aria-current', b.dataset.id === id)); }
   function setLibrary(open) {
     $('library').hidden = !open; $('libBackdrop').hidden = !open;
     $('songBtn').setAttribute('aria-expanded', open);
     if (open) { const cur = document.querySelector('#libList .song[aria-current="true"]') || document.querySelector('#libList .song'); cur && cur.focus(); }
   }
   function openPiece(el) {
-    markPiece(el.dataset.piece); $('fileInput').value = ''; setLibrary(false); setDrawer(false);
+    markPiece(el.dataset.piece); remember(el.dataset.piece); $('fileInput').value = ''; setLibrary(false); setDrawer(false);
     $('pieceName').textContent = el.dataset.title;
     loadXml(el.textContent.trim(), el.dataset.title);
   }
-  const groups = new Map();
-  pieceEls.forEach(el => { const g = el.dataset.group || 'Songs'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(el); });
-  [...groups.keys()].sort().reverse().forEach(g => {
-    const sec = document.createElement('section'); sec.className = 'lib-group';
-    sec.innerHTML = '<h3></h3><ul></ul>'; sec.querySelector('h3').textContent = g;
-    groups.get(g).forEach(el => {
-      const li = document.createElement('li'), b = document.createElement('button');
-      b.className = 'song'; b.dataset.id = el.dataset.piece;
-      const m = el.textContent.match(/<creator[^>]*>([^<]*)<\/creator>/);
-      b.innerHTML = '<span class="t"></span><span class="by"></span>';
-      b.querySelector('.t').textContent = el.dataset.title;
-      b.querySelector('.by').textContent = m ? m[1].replace(/&amp;/g, '&') : '';
-      b.onclick = () => openPiece(el);
-      li.appendChild(b); sec.querySelector('ul').appendChild(li);
+  function openUpload(rec) {
+    markPiece(rec.id); remember(rec.id); $('fileInput').value = ''; setLibrary(false); setDrawer(false);
+    $('pieceName').textContent = rec.title;
+    loadXml(rec.data, rec.title);
+  }
+  function songButton(id, title, by, onOpen) {
+    const b = document.createElement('button');
+    b.className = 'song'; b.dataset.id = id;
+    b.innerHTML = '<span class="t"></span><span class="by"></span>';
+    b.querySelector('.t').textContent = title;
+    b.querySelector('.by').textContent = by || '';
+    b.setAttribute('aria-current', id === currentId);
+    b.onclick = onOpen;
+    return b;
+  }
+  function renderLibrary() {
+    const list = $('libList'); list.innerHTML = '';
+    if (uploads.length) {
+      const sec = document.createElement('section'); sec.className = 'lib-group';
+      sec.innerHTML = '<h3>On this device</h3><ul></ul>';
+      uploads.forEach(rec => {
+        const li = document.createElement('li'); li.className = 'up-row';
+        const when = new Date(rec.added).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        li.appendChild(songButton(rec.id, rec.title, `${rec.file} · added ${when}`, () => openUpload(rec)));
+        const x = document.createElement('button'); x.className = 'up-del'; x.textContent = 'Remove';
+        x.setAttribute('aria-label', 'Remove ' + rec.title + ' from this device');
+        x.onclick = async () => { await upDel(rec.id); uploads = await upAll(); renderLibrary(); };
+        li.appendChild(x);
+        sec.querySelector('ul').appendChild(li);
+      });
+      list.appendChild(sec);
+    }
+    const groups = new Map();
+    pieceEls.forEach(el => { const g = el.dataset.group || 'Songs'; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(el); });
+    [...groups.keys()].sort().reverse().forEach(g => {
+      const sec = document.createElement('section'); sec.className = 'lib-group';
+      sec.innerHTML = '<h3></h3><ul></ul>'; sec.querySelector('h3').textContent = g;
+      groups.get(g).forEach(el => {
+        const m = el.textContent.match(/<creator[^>]*>([^<]*)<\/creator>/);
+        const li = document.createElement('li');
+        li.appendChild(songButton(el.dataset.piece, el.dataset.title, m ? m[1].replace(/&amp;/g, '&') : '', () => openPiece(el)));
+        sec.querySelector('ul').appendChild(li);
+      });
+      list.appendChild(sec);
     });
-    $('libList').appendChild(sec);
-  });
+  }
   $('songBtn').onclick = () => setLibrary($('library').hidden);
   $('closeLib').onclick = () => setLibrary(false);
   $('libBackdrop').onclick = () => setLibrary(false);
   document.addEventListener('keydown', e => { if (e.key === 'Escape') setLibrary(false); });
-  if (window.opensheetmusicdisplay && pieceEls.length) openPiece(pieceEls[0]);
-  else $('status').textContent = 'The notation library didn’t load. Check your connection and reload.';
+
+  // Start: reopen the last song (built-in or saved upload), else the first built-in.
+  (async () => {
+    renderLibrary();
+    uploads = await upAll(); renderLibrary();
+    if (!window.opensheetmusicdisplay) return;
+    const last = lastSong();
+    const up = uploads.find(u => u.id === last), el = pieceEls.find(e => e.dataset.piece === last);
+    if (up) openUpload(up); else if (el) openPiece(el);
+    else if (pieceEls.length) openPiece(pieceEls[0]);
+    else if (uploads.length) openUpload(uploads[0]);
+  })();
+  if (!window.opensheetmusicdisplay) $('status').textContent = 'The notation library didn’t load. Check your connection and reload.';
   window.__sf = { peak() { if (!meter) return 0; const d = new Float32Array(meter.fftSize); meter.getFloatTimeDomainData(d); return d.reduce((m, x) => Math.max(m, Math.abs(x)), 0); }, get steps() { return steps; }, get notes() { return notes; }, get parts() { return parts; } };
 })();
 </script>
