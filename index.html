@@ -58555,7 +58555,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     mbox.hidden = true;
     osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(scoreEl, {
       backend: 'svg', autoResize: true, drawTitle: true, drawComposer: true,
-      followCursor: true, cursorsOptions: [{ type: 0, color: '#a8620f', alpha: 0.35, follow: true }]
+      followCursor: false, cursorsOptions: [{ type: 0, color: '#a8620f', alpha: 0.35, follow: false }]
     });
     try {
       await osmd.load(text);
@@ -58993,6 +58993,22 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     const r = measureRect(mi); if (!r) return;
     Object.assign(mbox.style, { left: r.x + 'px', top: r.y + 'px', width: r.w + 'px', height: r.h + 'px' });
     mbox.hidden = false;
+    if (playing) keepInView(r);
+  }
+  // During playback, scroll only when the highlighted bar leaves the screen: put it just below the top bar.
+  // (The notation library's own follow-scrolling is off; on iPhone it fought with taps and sent the page to the top.)
+  let userScrollUntil = 0;
+  const userScrolled = () => { userScrollUntil = Date.now() + 4000; };
+  ['wheel', 'touchmove', 'keydown'].forEach(ev => window.addEventListener(ev, e => {
+    if (ev !== 'keydown' || ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) userScrolled();
+  }, { passive: true }));
+  function keepInView(r) {
+    if (Date.now() < userScrollUntil) return;   // you're scrolling: don't pull the page back for a few seconds
+    const barH = $('transport').offsetHeight;
+    const top = sheet.getBoundingClientRect().top + r.y, bottom = top + r.h;
+    if (top < barH + 4 || bottom > window.innerHeight - 8) {
+      window.scrollTo({ top: window.scrollY + top - barH - 24, behavior: 'auto' });
+    }
   }
   scoreEl.addEventListener('click', e => {
     if (!osmd || !steps.length) return;
@@ -59207,7 +59223,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     else if (uploads.length) openUpload(uploads[0]);
   })();
   if (!window.opensheetmusicdisplay) $('status').textContent = 'The notation library didn’t load. Check your connection and reload.';
-  window.__sf = { peak() { if (!meter) return 0; const d = new Float32Array(meter.fftSize); meter.getFloatTimeDomainData(d); return d.reduce((m, x) => Math.max(m, Math.abs(x)), 0); }, get steps() { return steps; }, get notes() { return notes; }, get parts() { return parts; } };
+  window.__sf = { peak() { if (!meter) return 0; const d = new Float32Array(meter.fftSize); meter.getFloatTimeDomainData(d); return d.reduce((m, x) => Math.max(m, Math.abs(x)), 0); }, get steps() { return steps; }, get notes() { return notes; }, get parts() { return parts; }, rect(mi) { const r = measureRect(mi); if (!r) return null; const t = sheet.getBoundingClientRect(); return { x: t.left + r.x - sheet.scrollLeft + r.w / 2, y: t.top + r.y + r.h / 2 }; } };
 })();
 </script>
 
