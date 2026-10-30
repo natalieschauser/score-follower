@@ -109,6 +109,9 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   background: var(--surface); border: 2px solid var(--amber); box-shadow: 0 12px 40px rgba(0,0,0,.18);
   font: 600 5.5rem/1 var(--display); color: var(--amber); font-variant-numeric: tabular-nums; }
 .countdown small { display: block; font: 600 .7rem var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-top: -6px; }
+.follow-btn { position: fixed; z-index: 15; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px)); padding: 10px 18px; border-radius: 999px;
+  background: var(--ink); color: var(--paper); border-color: var(--ink); font-weight: 600; box-shadow: 0 6px 20px rgba(0,0,0,.25); }
 .backdrop { position: fixed; inset: 0; z-index: 19; background: rgba(10, 12, 18, .4); }
 
 @media (max-width: 760px) {
@@ -201,6 +204,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     <p class="hint">Tap any measure in the score to jump there, or type a bar number at the top. Mute your part to play it yourself along with the others.</p>
   </aside>
   <div class="backdrop" id="backdrop" hidden></div>
+  <button class="follow-btn" id="followBtn" hidden>Follow playback</button>
   <div class="countdown" id="countdown" hidden aria-live="assertive"><div><span id="countNum">4</span><small>Get ready</small></div></div>
   <section class="sheet" id="sheet">
     <div id="score"><div class="status" id="status">Loading score…</div></div>
@@ -58900,6 +58904,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
 
   let countEnd = 0, countBeatSec = 0, countStart = 0, countTotal = 0;
   async function play(opts = {}) {
+    following = true;
     const token = ++playToken;
     await ensureAudio();
     if (token !== playToken) return;   // a Pause or another Play came in while waiting
@@ -58926,7 +58931,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
       countEnd = ctx.currentTime + 0.06 + lead;
     } else countEnd = 0;
     startTime = ctx.currentTime + 0.06 + lead;
-    playing = true; $('playBtn').textContent = 'Pause';
+    playing = true; $('playBtn').textContent = 'Pause'; setFollowing(true);
     pump();
     clearInterval(pumpTimer); pumpTimer = setInterval(pump, 100);
     raf = requestAnimationFrame(tick);
@@ -58934,7 +58939,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   function stop() {
     playToken++;
     playing = false; cancelAnimationFrame(raf); clearInterval(pumpTimer);
-    countEnd = 0; $('countdown').hidden = true;
+    countEnd = 0; $('countdown').hidden = true; $('followBtn').hidden = true;
     activeNodes.forEach(o => { o.onended = null; try { o.stop(); } catch (e) {} }); activeNodes.clear();
     $('playBtn').textContent = 'Play';
   }
@@ -58997,17 +59002,26 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   }
   // During playback, scroll only when the highlighted bar leaves the screen: put it just below the top bar.
   // (The notation library's own follow-scrolling is off; on iPhone it fought with taps and sent the page to the top.)
-  let userScrollUntil = 0;
-  const userScrolled = () => { userScrollUntil = Date.now() + 4000; };
-  ['wheel', 'touchmove', 'keydown'].forEach(ev => window.addEventListener(ev, e => {
-    if (ev !== 'keydown' || ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) userScrolled();
-  }, { passive: true }));
-  function keepInView(r) {
-    if (Date.now() < userScrollUntil) return;   // you're scrolling: don't pull the page back for a few seconds
+  // Follow mode: during playback the page keeps the playing bar on screen. Any scroll you make yourself
+  // (finger, momentum glide, wheel, keys) turns following off until you tap a bar, tap
+  // "Follow playback", or press Play. Scrolls the page makes itself are told apart by position.
+  let following = true, autoY = -1;
+  function setFollowing(on) {
+    following = on;
+    $('followBtn').hidden = on || !playing;
+  }
+  window.addEventListener('scroll', () => {
+    if (autoY >= 0 && Math.abs(window.scrollY - autoY) < 3) return;   // our own scroll
+    autoY = -1;
+    if (playing && following) setFollowing(false);
+  }, { passive: true });
+  function keepInView(r, force) {
+    if (!following && !force) return;
     const barH = $('transport').offsetHeight;
     const top = sheet.getBoundingClientRect().top + r.y, bottom = top + r.h;
-    if (top < barH + 4 || bottom > window.innerHeight - 8) {
+    if (force || top < barH + 4 || bottom > window.innerHeight - 8) {
       window.scrollTo({ top: window.scrollY + top - barH - 24, behavior: 'auto' });
+      autoY = window.scrollY;
     }
   }
   scoreEl.addEventListener('click', e => {
@@ -59017,7 +59031,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     for (let mi = 0; mi < measureCount; mi++) {
       const r = measureRect(mi);
       if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-        const was = playing; stop(); seekMeasure(mi); if (was) play(); return;
+        const was = playing; stop(); seekMeasure(mi); following = true; if (was) play(); return;
       }
     }
   });
@@ -59037,6 +59051,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   $('masterVol').addEventListener('input', () => { if (master) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02); });
   $('metVol').addEventListener('input', () => { if (metGain) metGain.gain.setTargetAtTime(metLevel(), ctx.currentTime, 0.01); });
   $('playBtn').onclick = () => playing ? stop() : play({ countIn: true });
+  $('followBtn').onclick = () => { setFollowing(true); const r = measureRect(steps[stepIdx].m); if (r) keepInView(r, true); };
   $('repeatBtn').onclick = e => {
     repeatsOn = !repeatsOn;
     e.target.setAttribute('aria-pressed', repeatsOn);
@@ -59048,11 +59063,11 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   // ---------- measure navigation ----------
   function jumpTo(mi) {
     mi = Math.max(0, Math.min(measureCount - 1, mi));
-    const was = playing; stop(); seekMeasure(mi); if (was) play();
+    const was = playing; stop(); seekMeasure(mi); following = true; if (was) play();
     const r = measureRect(mi);
     if (r) { const top = sheet.getBoundingClientRect().top + window.scrollY + r.y - $('transport').offsetHeight - 40;
       if (r.y + sheet.getBoundingClientRect().top < $('transport').offsetHeight + 20 || r.y + r.h + sheet.getBoundingClientRect().top > window.innerHeight)
-        window.scrollTo({ top, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }
+        { window.scrollTo({ top, behavior: 'auto' }); autoY = window.scrollY; } }
   }
   const curMeasure = () => steps.length ? steps[stepIdx].m : 0;
   $('prevM').onclick = () => jumpTo(curMeasure() - 1);
