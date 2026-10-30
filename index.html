@@ -58558,7 +58558,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     scoreEl.innerHTML = '';
     mbox.hidden = true;
     osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(scoreEl, {
-      backend: 'svg', autoResize: true, drawTitle: true, drawComposer: true,
+      backend: 'svg', autoResize: false, drawTitle: true, drawComposer: true,
       followCursor: false, cursorsOptions: [{ type: 0, color: '#a8620f', alpha: 0.35, follow: false }]
     });
     try {
@@ -59031,11 +59031,37 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     for (let mi = 0; mi < measureCount; mi++) {
       const r = measureRect(mi);
       if (r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
-        const was = playing; stop(); seekMeasure(mi); following = true; if (was) play(); return;
+        const was = playing; stop(); seekMeasure(mi); following = true; if (was) play();
+        holdScroll(); return;
       }
     }
   });
-  window.addEventListener('resize', () => setTimeout(() => steps.length && showMeasure(steps[stepIdx].m), 400));
+  // After a tap, keep the page where you were. If anything throws it far up in the next second, put it back.
+  function holdScroll() {
+    const y0 = window.scrollY;
+    const fix = () => { if (window.scrollY < y0 - 150) { window.scrollTo(0, y0); autoY = window.scrollY; } };
+    requestAnimationFrame(fix); [60, 200, 450, 900].forEach(t => setTimeout(fix, t));
+  }
+  // Redraw the score only when the width really changes (rotating the phone, resizing a window).
+  // iPhone Safari fires resize whenever its toolbar grows or shrinks; redrawing then emptied the page
+  // for a moment and snapped the scroll position to the top.
+  let renderedWidth = window.innerWidth, resizeTimer = 0;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+      if (!osmd || !steps.length) return;
+      if (Math.abs(window.innerWidth - renderedWidth) < 2) { showMeasure(steps[stepIdx].m); return; }
+      renderedWidth = window.innerWidth;
+      const mi = steps[stepIdx].m, y0 = window.scrollY, h = scoreEl.offsetHeight;
+      scoreEl.style.minHeight = h + 'px';            // hold the page height while redrawing
+      osmd.zoom = window.innerWidth < 600 ? 0.6 : 0.85;
+      osmd.render();
+      scoreEl.style.minHeight = '';
+      osmd.cursor.reset(); cursorSrc = 0; if (!steps[stepIdx].end) cursorTo(steps[stepIdx].src); osmd.cursor.update();
+      window.scrollTo(0, Math.min(y0, document.documentElement.scrollHeight)); autoY = window.scrollY;
+      showMeasure(mi);
+    }, 300);
+  });
 
   // ---------- controls ----------
   function setTempo(v) { tempo = v; $('tempo').value = v; $('tempoVal').textContent = v; }
