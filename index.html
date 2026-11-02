@@ -102,6 +102,8 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
 .part .pvol output { font-family: var(--mono); font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
 .part.silent .name { color: var(--mute); text-decoration: line-through; }
 .part button { padding: 3px 8px; font-size: .78rem; }
+.part.hidden-part { border-style: dashed; }
+.part.hidden-part .name::after { content: ' (hidden)'; color: var(--muted); font-weight: 400; font-size: .8rem; }
 .hint { color: var(--muted); font-size: .82rem; margin: 0; max-width: 40ch; }
 #countIn { font: 500 .9rem var(--body); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 6px 8px; }
 .countdown { position: fixed; z-index: 30; left: 50%; top: 50%; transform: translate(-50%, -50%); pointer-events: none;
@@ -58723,17 +58725,27 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     parts = osmd.Sheet.Instruments.map((ins, i) => ins.Name || ('Part ' + (i + 1)));
     state.vol = parts.map(() => 0.8);
     partGains = [];
-    state.mute = parts.map(() => false); state.solo = parts.map(() => false);
+    state.mute = parts.map(() => false); state.solo = parts.map(() => false); state.hidden = parts.map(() => false);
     const ul = $('partList'); ul.innerHTML = '';
     parts.forEach((name, i) => {
       const li = document.createElement('li'); li.className = 'part'; li.id = 'part' + i;
-      li.innerHTML = `<span class="name"></span><button id="mute${i}" aria-pressed="false">Mute</button><button id="solo${i}" aria-pressed="false">Solo</button><label class="pvol" for="vol${i}">Vol<input id="vol${i}" type="range" min="0" max="100" value="80"><output id="volOut${i}">80</output></label>`;
+      li.innerHTML = `<span class="name"></span><button id="mute${i}" aria-pressed="false">Mute</button><button id="solo${i}" aria-pressed="false">Solo</button><button id="hide${i}" aria-pressed="false">Hide</button><label class="pvol" for="vol${i}">Vol<input id="vol${i}" type="range" min="0" max="100" value="80"><output id="volOut${i}">80</output></label>`;
       li.querySelector('.name').textContent = name;
       if (meta.pizz[i] && meta.pizz[i].some(Boolean)) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = 'pizz.'; li.querySelector('.name').after(t); }
       ul.appendChild(li);
       li.querySelector('#mute' + i).onclick = e => { state.mute[i] = !state.mute[i]; e.target.setAttribute('aria-pressed', state.mute[i]); applyGains(); };
       li.querySelector('#vol' + i).oninput = e => { state.vol[i] = e.target.value / 100; $('volOut' + i).textContent = e.target.value; applyGains(); };
       li.querySelector('#solo' + i).onclick = e => { state.solo[i] = !state.solo[i]; e.target.setAttribute('aria-pressed', state.solo[i]); applyGains(); };
+      // Hide: leave this part out of the drawn score (it still plays unless muted). At least one part stays shown.
+      li.querySelector('#hide' + i).onclick = e => {
+        const next = !state.hidden[i];
+        if (next && state.hidden.filter(h => !h).length <= 1) return;
+        state.hidden[i] = next;
+        e.target.setAttribute('aria-pressed', next); e.target.textContent = next ? 'Show' : 'Hide';
+        li.classList.toggle('hidden-part', next);
+        osmd.Sheet.Instruments[i].Visible = !next;
+        rerender();
+      };
     });
     applyGains();
   }
@@ -59014,6 +59026,8 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   }
   // Bar positions are computed once per render and cached: asking the browser for layout on every
   // note was a big source of lag on phones.
+  // A bar's drawn staves, skipping parts you've hidden (the library keeps stale positions for those).
+  const shownBars = mi => (osmd.GraphicSheet.MeasureList[mi] || []).filter(gm => gm && gm.ParentStaff && gm.ParentStaff.ParentInstrument && gm.ParentStaff.ParentInstrument.Visible !== false);
   let rectCache = new Map(), svgOff = null;
   function invalidateRects() { rectCache = new Map(); svgOff = null; noteXCache = new Map(); }
   // Amber note line: our own overlay, moved with a transform so the score is never repainted.
@@ -59022,15 +59036,17 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   function noteX(src) {
     if (noteXCache.has(src)) return noteXCache.get(src);
     const st = baseSteps[src]; if (!st) return null;
-    const sm = osmd.Sheet.SourceMeasures[st.m], col = (osmd.GraphicSheet.MeasureList[st.m] || []).filter(Boolean);
+    const sm = osmd.Sheet.SourceMeasures[st.m], col = shownBars(st.m);
     const rel = st.t - sm.AbsoluteTimestamp.RealValue;
-    let x = null;
+    // exact note at this moment; if it's only in a hidden part, use the latest shown note before it
+    let x = null, before = null, beforeRel = -1;
     for (const gm of col) for (const se of gm.staffEntries || []) {
-      if (Math.abs(se.relInMeasureTimestamp.RealValue - rel) < 1e-6) {
-        const ex = se.PositionAndShape.AbsolutePosition.x;
-        if (x === null || ex < x) x = ex;
-      }
+      const er = se.relInMeasureTimestamp.RealValue, ex = se.PositionAndShape.AbsolutePosition.x;
+      if (Math.abs(er - rel) < 1e-6) { if (x === null || ex < x) x = ex; }
+      else if (er < rel && er > beforeRel) { beforeRel = er; before = ex; }
     }
+    if (x === null) x = before;
+    if (x === null && col[0]) x = col[0].PositionAndShape.AbsolutePosition.x + 1;
     if (x !== null) x = svgOff.x + (x + 0.6) * osmd.zoom * 10;
     noteXCache.set(src, x);
     return x;
@@ -59047,7 +59063,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   }
   function measureRect(mi) {
     if (rectCache.has(mi)) return rectCache.get(mi);
-    const col = (osmd.GraphicSheet.MeasureList[mi] || []).filter(Boolean);
+    const col = shownBars(mi);
     if (!col.length) return null;
     const z = osmd.zoom * 10;
     const a = col[0].PositionAndShape, b = col[col.length - 1].PositionAndShape;
