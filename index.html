@@ -213,6 +213,11 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
       <p class="sub">Smaller fits more bars on each line.</p>
     </section>
     <section class="panel">
+      <h3>Screen</h3>
+      <div><button id="awakeBtn" aria-pressed="true">Keep screen on ✓</button></div>
+      <p class="sub" id="awakeNote">Stops your phone from going to sleep while this page is open.</p>
+    </section>
+    <section class="panel">
       <h3>Overall volume</h3>
       <input id="masterVol" type="range" min="0" max="100" value="75" aria-label="Overall volume">
     </section>
@@ -59188,6 +59193,29 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   $('masterVol').addEventListener('input', () => { if (master) master.gain.setTargetAtTime(masterLevel(), ctx.currentTime, 0.02); });
   $('metVol').addEventListener('input', () => { if (metGain) metGain.gain.setTargetAtTime(metLevel(), ctx.currentTime, 0.01); });
   $('playBtn').onclick = () => playing ? stop() : play({ countIn: true });
+
+  // ---------- keep the screen on ----------
+  // Screen Wake Lock (Safari 16.4+). It needs a tap to start and is dropped whenever you leave the page,
+  // so ask again on each tap and when the page becomes visible. Your on/off choice is remembered.
+  let wakeLock = null, awakeOn = true;
+  try { awakeOn = localStorage.getItem('sf-awake') !== 'off'; } catch (e) {}
+  async function lockScreen() {
+    if (!awakeOn || !('wakeLock' in navigator) || document.visibilityState !== 'visible') return;
+    if (wakeLock && !wakeLock.released) return;
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) { wakeLock = null; }
+  }
+  function releaseScreen() { if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; } }
+  function showAwake() {
+    const b = $('awakeBtn'); b.setAttribute('aria-pressed', awakeOn); b.textContent = awakeOn ? 'Keep screen on ✓' : 'Keep screen on';
+    if (!('wakeLock' in navigator)) $('awakeNote').textContent = 'This browser can’t keep the screen on. On iPhone it needs iOS 16.4 or later.';
+  }
+  $('awakeBtn').onclick = () => {
+    awakeOn = !awakeOn; try { localStorage.setItem('sf-awake', awakeOn ? 'on' : 'off'); } catch (e) {}
+    showAwake(); awakeOn ? lockScreen() : releaseScreen();
+  };
+  ['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, lockScreen, { passive: true }));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') lockScreen(); });
+  showAwake(); lockScreen();
   $('followBtn').onclick = () => { setFollowing(true); const r = measureRect(steps[stepIdx].m); if (r) keepInView(r, true); };
   $('repeatBtn').onclick = e => {
     repeatsOn = !repeatsOn;
