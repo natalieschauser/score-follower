@@ -58594,6 +58594,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   // ---------- loading ----------
   async function loadXml(text, label) {
     stop();
+    closeAudio();
     scoreEl.innerHTML = '';
     mbox.hidden = true; $('nline').hidden = true;
     osmd = new opensheetmusicdisplay.OpenSheetMusicDisplay(scoreEl, {
@@ -58774,28 +58775,43 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     master.connect(comp); comp.connect(makeup); makeup.connect(ctx.destination); makeup.connect(meter);
     partGains = []; metGain = null;
   }
+  // Everything the audio engine built is listed here so it can be torn down completely.
+  let routingNodes = [];
+  function dropRouting() {
+    routingNodes.forEach(n => { try { n.disconnect(); } catch (e) {} });
+    routingNodes = []; partGains = []; metGain = null;
+  }
+  function closeAudio() {
+    if (!ctx) return;
+    dropRouting();
+    try { ctx.close(); } catch (e) {}
+    ctx = null;
+  }
   function buildRouting() {
+    dropRouting();
     partGains = parts.map((_, i) => {
-      const g = ctx.createGain(); g.gain.value = partLevel(i);
-      // cello body: wood resonances around 220 Hz, 580 Hz and 1.3 kHz, softened top end
+      const g = ctx.createGain(); g.gain.value = partLevel(i); routingNodes.push(g);
+      // cello body: warm wood resonance, softened top end (two filters per part, kept light for phones)
       let last = g;
-      for (const [type, freq, q, db] of [['peaking', 220, 1.0, 4], ['peaking', 580, 1.3, 3], ['peaking', 1300, 1.6, 2], ['highshelf', 3500, 0.7, -9]]) {
+      for (const [type, freq, q, db] of [['peaking', 260, 0.9, 4], ['highshelf', 3500, 0.7, -9]]) {
         const bq = ctx.createBiquadFilter(); bq.type = type; bq.frequency.value = freq; bq.Q.value = q; bq.gain.value = db;
-        last.connect(bq); last = bq;
+        last.connect(bq); last = bq; routingNodes.push(bq);
       }
       const p = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+      if (p) routingNodes.push(p);
       const spread = parts.length > 1 ? (i / (parts.length - 1)) * 1.0 - 0.5 : 0;
       if (p) { p.pan.value = spread; last.connect(p); p.connect(master); } else last.connect(master);
       return g;
     });
-    metGain = ctx.createGain(); metGain.gain.value = metLevel(); metGain.connect(master);
+    metGain = ctx.createGain(); metGain.gain.value = metLevel(); metGain.connect(master); routingNodes.push(metGain);
   }
   async function ensureAudio() {
     if (!ctx || ctx.state === 'closed') newContext();
+    else if (ctx.state === 'interrupted') { closeAudio(); newContext(); }
     unlockIOS();
     if (ctx.state !== 'running') { try { await ctx.resume(); } catch (e) {} }
     if (ctx.state !== 'running') {
-      try { ctx.close(); } catch (e) {}
+      closeAudio();
       newContext();
       try { await ctx.resume(); } catch (e) {}
     }
@@ -58853,9 +58869,14 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   // routes sound like a music app instead.
   let silentEl;
   function unlockIOS() {
-    try { if (navigator.audioSession && navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch (e) {}
+    if (navigator.audioSession) {   // iOS 17+: this alone plays through the silent switch
+      try { if (navigator.audioSession.type !== 'playback') navigator.audioSession.type = 'playback'; } catch (e) {}
+      return;
+    }
+    // Older iPhones: a silent looping <audio> element. 44.1 kHz so it doesn't force the speaker
+    // to a low sample rate (an 8 kHz file can make Web Audio crackle).
     if (silentEl) { silentEl.play().catch(() => {}); return; }
-    const rate = 8000, n = rate / 2, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
+    const rate = 44100, n = rate / 10, buf = new ArrayBuffer(44 + n), v = new DataView(buf);
     const w = (o, s) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
     w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVEfmt '); v.setUint32(16, 16, true);
     v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate, true);
@@ -58892,18 +58913,17 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     track(src, o);
   }
   function pluck(f, when, dest) {
-    const o = ctx.createOscillator(), o2 = ctx.createOscillator();
-    o.type = 'triangle'; o2.type = 'sine'; o.frequency.value = f; o2.frequency.value = f * 2;
-    const filt = ctx.createBiquadFilter(); filt.type = 'lowpass';
-    filt.frequency.setValueAtTime(Math.min(5000, f * 8), when);
-    filt.frequency.exponentialRampToValueAtTime(Math.max(200, f * 1.5), when + 0.4);
-    const g = ctx.createGain(), g2 = ctx.createGain(); g2.gain.value = 0.25;
+    const o = ctx.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+    const filt = ctx.createBiquadFilter(); filt.type = 'lowpass'; filt.Q.value = 0.8;
+    filt.frequency.setValueAtTime(Math.min(4500, f * 7), when);
+    filt.frequency.exponentialRampToValueAtTime(Math.max(180, f * 1.3), when + 0.3);
+    const g = ctx.createGain();
     g.gain.setValueAtTime(0.0001, when);
-    g.gain.exponentialRampToValueAtTime(0.42, when + 0.004);
-    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.9);
-    o.connect(filt); o2.connect(g2); g2.connect(filt); filt.connect(g); g.connect(dest);
-    [o, o2].forEach(x => { x.start(when); x.stop(when + 0.95); });
-    track(o, o2);
+    g.gain.exponentialRampToValueAtTime(0.38, when + 0.004);
+    g.gain.exponentialRampToValueAtTime(0.0001, when + 0.7);
+    o.connect(filt); filt.connect(g); g.connect(dest);
+    o.start(when); o.stop(when + 0.72);
+    track(o);
   }
   const masterLevel = () => 2.4 * Math.pow(+$('masterVol').value / 100, 2);
   let meter;
@@ -58934,29 +58954,46 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   const LOOKAHEAD = 1.2;
   let queue = [], qi = 0, beatQ = [], bi = 0, qStop = Infinity;
   function pump() {
-    if (!playing) return;
+    if (!playing || !buses) return;
     const spw = secPerWhole(), horizon = ctx.currentTime + LOOKAHEAD;
     const at = t => startTime + (t - startPos) * spw;
     while (qi < queue.length && at(queue[qi].t) < horizon) {
       const n = queue[qi++], when = at(n.t);
       if (when < ctx.currentTime - 0.05) continue;          // fell behind: skip rather than pile up
       const len = Math.min(n.dur, qStop - n.t) * spw;
-      if (n.chop) chopSound(when, partGains[n.part]);
-      else if (n.pizz) pluck(n.f, when, partGains[n.part]);
-      else voice(n.f, when, Math.max(0.05, len * 0.98), partGains[n.part]);
+      const dest = buses.parts[n.part];
+      if (n.chop) chopSound(when, dest);
+      else if (n.pizz) pluck(n.f, when, dest);
+      else voice(n.f, when, Math.max(0.05, len * 0.98), dest);
     }
     while (bi < beatQ.length && at(beatQ[bi].t) < horizon) {
       const b = beatQ[bi++], when = at(b.t);
-      if (when >= ctx.currentTime - 0.02) click(when, b.down);
+      if (when >= ctx.currentTime - 0.02) click(when, b.down, buses.met);
     }
   }
 
+  // Each Play gets its own small set of volume knobs ("buses") that every note goes through.
+  // Pause fades them to silence in 30 ms (no clicks) and then unplugs them, so nothing from an
+  // old Play keeps running in the background.
+  let buses = null;
+  function openBuses() {
+    const now = ctx.currentTime, mk = dest => { const g = ctx.createGain(); g.gain.setValueAtTime(1, now); g.connect(dest); return g; };
+    buses = { parts: partGains.map(pg => mk(pg)), met: mk(metGain), count: mk(master) };
+  }
+  function fadeBuses() {
+    if (!buses || !ctx) { buses = null; return; }
+    const b = buses, now = ctx.currentTime, all = [...b.parts, b.met, b.count];
+    all.forEach(g => { try { g.gain.cancelScheduledValues(now); g.gain.setValueAtTime(g.gain.value, now); g.gain.linearRampToValueAtTime(0, now + 0.03); } catch (e) {} });
+    setTimeout(() => all.forEach(g => { try { g.disconnect(); } catch (e) {} }), 120);
+    buses = null;
+  }
   let countEnd = 0, countBeatSec = 0, countStart = 0, countTotal = 0;
   async function play(opts = {}) {
     following = true;
     const token = ++playToken;
     await ensureAudio();
     if (token !== playToken) return;   // a Pause or another Play came in while waiting
+    openBuses();
     const pos = steps[stepIdx].end ? 0 : steps[stepIdx].t;
     if (steps[stepIdx].end) seekStep(0);
     startPos = pos;
@@ -58971,8 +59008,8 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
       const sm = osmd.Sheet.SourceMeasures[steps[stepIdx].m];
       const perBar = Math.max(1, Math.round((sm ? sm.Duration.RealValue : 1) / meta.beatUnit));
       countBeatSec = meta.beatUnit * secPerWhole();
-      const t0 = ctx.currentTime + 0.1, cg = ctx.createGain();
-      cg.gain.value = 0.35 + 0.9 * (+$('metVol').value / 100); cg.connect(master);
+      const t0 = ctx.currentTime + 0.1, cg = buses.count;
+      cg.gain.setValueAtTime(0.35 + 0.9 * (+$('metVol').value / 100), ctx.currentTime);
       for (let k = 0; k < perBar * bars; k++) click(t0 + k * countBeatSec, k % perBar === 0, cg);
       lead = perBar * bars * countBeatSec + 0.04;
       countStart = t0; countTotal = perBar * bars;
@@ -58989,7 +59026,10 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     playToken++;
     playing = false; cancelAnimationFrame(raf); clearInterval(pumpTimer);
     countEnd = 0; $('countdown').hidden = true; $('followBtn').hidden = true;
-    activeNodes.forEach(o => { o.onended = null; try { o.stop(); } catch (e) {} }); activeNodes.clear();
+    // fade out, then stop every sounding note just after the fade
+    const t = ctx ? ctx.currentTime + 0.035 : 0;
+    fadeBuses();
+    activeNodes.forEach(o => { o.onended = null; try { o.stop(t); } catch (e) { try { o.stop(); } catch (e2) {} } }); activeNodes.clear();
     $('playBtn').textContent = 'Play';
   }
   function tick() {
@@ -59162,6 +59202,11 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   // Redraw while keeping your place: hold the page height, then return to the same bar.
   function rerender() {
     if (!osmd || !steps.length) return;
+    const wasPlaying = playing; if (wasPlaying) stop();
+    rerenderNow();
+    if (wasPlaying) play();
+  }
+  function rerenderNow() {
     const mi = steps[stepIdx].m;
     const r0 = measureRect(mi), offset = r0 ? sheet.getBoundingClientRect().top + r0.y : null;
     scoreEl.style.minHeight = scoreEl.offsetHeight + 'px';
@@ -59230,7 +59275,10 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
     showAwake(); awakeOn ? lockScreen() : releaseScreen();
   };
   ['pointerdown', 'keydown'].forEach(ev => document.addEventListener(ev, lockScreen, { passive: true }));
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') lockScreen(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') lockScreen();
+    else if (playing) stop();
+  });
   showAwake(); lockScreen();
   $('followBtn').onclick = () => { setFollowing(true); const r = measureRect(steps[stepIdx].m); if (r) keepInView(r, true); };
   $('repeatBtn').onclick = e => {
@@ -59422,6 +59470,7 @@ main.layout { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 2
   window.__sf = { peak() { if (!meter) return 0; const d = new Float32Array(meter.fftSize); meter.getFloatTimeDomainData(d); return d.reduce((m, x) => Math.max(m, Math.abs(x)), 0); }, get steps() { return steps; }, get notes() { return notes; }, get parts() { return parts; }, get osmd() { return osmd; }, get base() { return baseSteps; }, rect(mi) { const r = measureRect(mi); if (!r) return null; const t = sheet.getBoundingClientRect(); return { x: t.left + r.x - sheet.scrollLeft + r.w / 2, y: t.top + r.y + r.h / 2 }; } };
 })();
 </script>
+
 
 </body>
 </html>
